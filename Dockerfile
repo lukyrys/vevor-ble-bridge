@@ -1,5 +1,5 @@
-# docker build -t vevor-ble-bridge .
-# docker run --privileged --net=host -d vevor-ble-bridge
+# docker build -t dh-ble-bridge .
+# docker run --privileged --net=host -d dh-ble-bridge
 
 FROM python:3.11-bookworm
 ADD requirements.txt .
