@@ -269,8 +269,8 @@ def dispatch_result(result):
             msg = f"{msg} ({result.error_msg})"
         try:
             info = client.publish(f"{mqtt_prefix}/status/state", msg, qos=1)
-            result = info.wait_for_publish()
-            if not result:
+            r = info.wait_for_publish(5)
+            if not r:
                 logger.debug("Publish successful (ACK received)")
             else:
                 # If wait_for_publish() returns True, that indicates a timeout or failure
