@@ -267,7 +267,18 @@ def dispatch_result(result):
         msg = result.running_step_msg
         if result.error:
             msg = f"{msg} ({result.error_msg})"
-        client.publish(f"{mqtt_prefix}/status/state", msg)
+        try:
+            info = client.publish(f"{mqtt_prefix}/status/state", msg, qos=1)
+            result = info.wait_for_publish()
+            if not result:
+                logger.debug("Publish successful (ACK received)")
+            else:
+                # If wait_for_publish() returns True, that indicates a timeout or failure
+                logger.debug("Publish did not complete (possible disconnection or timeout)")
+
+        except Exception as e:
+            logger.debug(f"Exception while client.publish() = {e}")
+
         client.publish(f"{mqtt_prefix}/room_temperature/state", result.cab_temperature)
         if result.running_mode:
             client.publish(f"{mqtt_prefix}/mode/av", "online")
