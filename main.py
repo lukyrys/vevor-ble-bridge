@@ -69,6 +69,8 @@ def init_client():
     else:
         logger.info(f"Connecting to MQTT broker {mqtt_host}:{mqtt_port}")
     client.on_connect = on_connect
+    client.on_disconnect = on_disconnect
+    client.on_publish = on_publish
     client.on_message = on_message
     client.connect(mqtt_host, port=mqtt_port)
     return client
@@ -256,6 +258,14 @@ def on_connect(client, userdata, flags, rc):
     publish_ha_config()
 
 
+def on_disconnect(client, userdata, rc):
+    """
+    This callback is called when the client disconnects from the broker.
+    An rc (result code) different from 0 usually indicates an unexpected disconnect.
+    """
+    logger.debug(f"Disconnected from broker. rc = {rc}")
+
+
 def dispatch_result(result):
     stop_pub = False
     start_pub = False
@@ -335,6 +345,14 @@ def on_message(client, userdata, msg):
         logger.info(f"Received MODE={msg.payload} command")
         dispatch_result(vdh.set_mode(modes.index(msg.payload.decode('ascii')) + 1))    
     logger.debug(f"{msg.topic} {str(msg.payload)}")
+
+
+def on_publish(client, userdata, mid):
+    """
+    This callback is called when a publish message has completed delivery to the broker.
+    You can track message IDs (mid) here if you need to confirm each publish.
+    """
+    logger.debug(f"on_publish() mid = {mid}")
 
 
 logger = init_logger()
