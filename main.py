@@ -268,6 +268,7 @@ def on_disconnect(client, userdata, rc):
 
 
 def dispatch_result(result):
+    global system_state
     stop_pub = False
     start_pub = False
     level_pub = False
@@ -278,6 +279,9 @@ def dispatch_result(result):
         msg = result.running_step_msg
         if result.error:
             msg = f"{msg} ({result.error_msg})"
+        # Add system state if not in normal connected state
+        if system_state != "Connected":
+            msg = f"{msg} [{system_state}]"
         try:
             info = client.publish(f"{mqtt_prefix}/status/state", msg, qos=1)
             r = info.wait_for_publish(5)
@@ -391,13 +395,18 @@ overheat_lockout_time = 60  # seconds - block MQTT commands for this long
 overheat_active = False
 overheat_start_time = 0
 
+# System state tracking
+system_state = "Connected"  # Connected, Reconnecting, Disconnected, Overheat Active, etc.
+
 while run:
     try:
         # Initialize or reconnect if needed
         if vdh is None:
+            system_state = "Reconnecting"
             logger.info(f"Connecting to BLE device {ble_mac_address}...")
             vdh = vevor.DieselHeater(ble_mac_address, ble_passkey)
             logger.info("Successfully connected to BLE device")
+            system_state = "Connected"
             reconnect_attempt = 0
 
         # Get status and dispatch
@@ -415,11 +424,11 @@ while run:
                     logger.error("Reducing power to level 1 and locking controls for 60s")
                     overheat_active = True
                     overheat_start_time = time.time()
+                    system_state = "Overheat Active"
 
                     # Immediately reduce power to 1
                     try:
                         vdh.set_level(1)
-                        client.publish(f"{mqtt_prefix}/status/state", "OVERHEAT PROTECTION ACTIVE - Power reduced to 1")
                     except Exception as e:
                         logger.error(f"Failed to reduce power during overheat: {e}")
                 else:
@@ -427,6 +436,7 @@ while run:
                     if time.time() - overheat_start_time >= overheat_lockout_time:
                         logger.info("Overheat lockout period expired, controls re-enabled")
                         overheat_active = False
+                        system_state = "Connected"
 
             dispatch_result(result)
         else:
@@ -449,30 +459,35 @@ while run:
     except BTLEDisconnectError as e:
         logger.error(f"BLE disconnected: {e}")
         vdh = None
+        system_state = "Disconnected"
         # Publish offline status to MQTT
-        client.publish(f"{mqtt_prefix}/status/state", "Disconnected - attempting reconnect")
+        client.publish(f"{mqtt_prefix}/status/state", system_state)
         reconnect_attempt += 1
 
         if reconnect_attempt >= max_reconnect_attempts:
             logger.error(f"Failed to reconnect after {max_reconnect_attempts} attempts")
-            client.publish(f"{mqtt_prefix}/status/state", "Connection failed - retrying")
+            system_state = "Connection Failed"
+            client.publish(f"{mqtt_prefix}/status/state", system_state)
             reconnect_attempt = 0
             time.sleep(reconnect_delay * 3)  # Wait longer before trying again
         else:
             logger.info(f"Attempting to reconnect in {reconnect_delay}s (attempt {reconnect_attempt}/{max_reconnect_attempts})...")
+            system_state = "Reconnecting"
             time.sleep(reconnect_delay)
 
     except TimeoutError as e:
         logger.error(f"BLE timeout: {e}")
         vdh = None
-        client.publish(f"{mqtt_prefix}/status/state", "Timeout - reconnecting")
+        system_state = "Timeout"
+        client.publish(f"{mqtt_prefix}/status/state", system_state)
         time.sleep(reconnect_delay)
 
     except RuntimeError as e:
         # Watchdog or other runtime errors
         logger.error(f"Runtime error: {e}")
         vdh = None
-        client.publish(f"{mqtt_prefix}/status/state", "Connection issue - reconnecting")
+        system_state = "Watchdog Triggered"
+        client.publish(f"{mqtt_prefix}/status/state", system_state)
         consecutive_failures = 0
         time.sleep(reconnect_delay)
 
@@ -480,6 +495,7 @@ while run:
         logger.error(f"Unexpected error: {e}")
         logger.exception("Full traceback:")
         vdh = None
-        client.publish(f"{mqtt_prefix}/status/state", "Error - reconnecting")
+        system_state = "Error"
+        client.publish(f"{mqtt_prefix}/status/state", system_state)
         consecutive_failures = 0
         time.sleep(reconnect_delay)
