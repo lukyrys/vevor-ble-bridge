@@ -68,10 +68,11 @@ def init_client():
         client.username_pw_set(mqtt_username, mqtt_password)
     else:
         logger.info(f"Connecting to MQTT broker {mqtt_host}:{mqtt_port}")
+    # Set all callbacks before connecting
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
-    client.on_publish = on_publish
     client.on_message = on_message
+    client.on_publish = on_publish
     client.connect(mqtt_host, port=mqtt_port)
     return client
 
@@ -352,7 +353,8 @@ def on_publish(client, userdata, mid):
     This callback is called when a publish message has completed delivery to the broker.
     You can track message IDs (mid) here if you need to confirm each publish.
     """
-    logger.debug(f"on_publish() mid = {mid}")
+    # logger.debug(f"on_publish() mid = {mid}")  # Too much noise, uncomment if needed
+    pass
 
 
 logger = init_logger()

@@ -1,4 +1,4 @@
-from bluepy.btle import Scanner, DefaultDelegate
+from bluepy.btle import Scanner, DefaultDelegate, BTLEDisconnectError
 
 
 class ScanDelegate(DefaultDelegate):
@@ -15,7 +15,16 @@ class ScanDelegate(DefaultDelegate):
 print("Creating scanner...")
 scanner = Scanner().withDelegate(ScanDelegate())
 print("Scanning...")
-devices = scanner.scan(10.0)
+
+try:
+    devices = scanner.scan(10.0)
+except BTLEDisconnectError as e:
+    print(f"Scan finished with BTLEDisconnectError: {e}")
+    devices = []
+except Exception as e:
+    print(f"Scan finished with exception: {e}")
+    devices = []
+
 print("Finished.")
 
 for dev in devices:
