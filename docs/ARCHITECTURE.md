@@ -194,6 +194,156 @@ on_disconnect() callback
   └─► MQTT client auto-reconnects
 ```
 
+## Watchdog Mechanism
+
+The bridge includes a watchdog system to detect and recover from stuck BLE communication:
+
+### Consecutive Failures Detection
+
+```python
+consecutive_failures = 0
+max_consecutive_failures = 3
+
+if result is None:
+    consecutive_failures += 1
+    if consecutive_failures >= 3:
+        raise RuntimeError("Device not responding")
+```
+
+- Tracks failed status polls (returns None)
+- After 3 consecutive failures, forces reconnection
+- Resets counter on successful poll
+
+### Watchdog Timeout
+
+```python
+watchdog_timeout = 30  # seconds
+last_successful_poll = time.time()
+
+if time.time() - last_successful_poll > watchdog_timeout:
+    raise RuntimeError("Watchdog timeout")
+```
+
+- Monitors time since last successful poll
+- If no successful poll for 30 seconds, forces reconnection
+- Prevents infinite hangs during rapid command sequences
+
+### Recovery Flow
+
+```
+Watchdog triggered
+  │
+  ├─► Log error: "Watchdog Triggered"
+  ├─► Publish system state to MQTT
+  ├─► Set vdh = None
+  ├─► Reset consecutive_failures
+  └─► Wait 5s, then reconnect
+```
+
+## Overheat Protection
+
+Safety mechanism to prevent heater damage at extreme temperatures.
+
+### Configuration
+
+```python
+overheat_threshold = 256  # °C - critical temperature
+overheat_lockout_time = 60  # seconds
+overheat_previous_level = None  # Saved power level
+```
+
+### Activation (>= 256°C)
+
+```
+1. Detect: case_temperature >= 256°C
+   └─► Log critical error
+
+2. Save current state:
+   └─► overheat_previous_level = result.set_level
+
+3. Reduce power immediately:
+   └─► vdh.set_level(1)
+
+4. Lock controls for 60 seconds:
+   └─► Block level/temperature/mode MQTT commands
+   └─► Allow start/stop commands
+
+5. Update system state:
+   └─► system_state = "Overheat Active"
+   └─► MQTT status: "Running [Overheat Active]"
+```
+
+### Lockout Period
+
+During the 60-second lockout:
+- Status continues to publish every 2s
+- System state remains "Overheat Active"
+- MQTT commands (level/temp/mode) are rejected
+- Start/stop commands still work (can turn off)
+- Lockout persists regardless of temperature changes
+
+### Recovery (after 60s)
+
+```
+1. Check lockout expired:
+   └─► time.time() - overheat_start_time >= 60s
+
+2. Restore original power level:
+   └─► vdh.set_level(overheat_previous_level)
+
+3. Re-enable controls:
+   └─► system_state = "Connected"
+   └─► overheat_active = False
+
+4. Resume normal operation
+```
+
+### Command Blocking
+
+```python
+def on_message(client, userdata, msg):
+    if overheat_active:
+        time_remaining = 60 - (time.time() - overheat_start_time)
+        if time_remaining > 0:
+            if msg.topic in [level/cmd, temperature/cmd, mode/cmd]:
+                publish("OVERHEAT LOCKOUT: Xs remaining")
+                return  # Block command
+```
+
+## System State Tracking
+
+The bridge tracks and publishes system state alongside heater status:
+
+### State Values
+
+| State | Description | MQTT Format |
+|-------|-------------|-------------|
+| Connected | Normal operation | "Running" (heater state only) |
+| Reconnecting | Attempting BLE connection | "Reconnecting" |
+| Disconnected | BLE connection lost | "Disconnected" |
+| Connection Failed | Max reconnect attempts exceeded | "Connection Failed" |
+| Timeout | BLE timeout occurred | "Timeout" |
+| Watchdog Triggered | Watchdog detected stuck communication | "Watchdog Triggered" |
+| Overheat Active | Temperature >= 256°C, lockout active | "Running [Overheat Active]" |
+| Error | Unexpected exception | "Error" |
+
+### MQTT Status Publishing
+
+```python
+# Normal operation
+status = result.running_step_msg  # "Running", "Standby", etc.
+
+# With system state
+if system_state != "Connected":
+    status = f"{status} [{system_state}]"
+
+# Examples:
+# "Running"
+# "Running [Overheat Active]"
+# "Standby [Reconnecting]"
+# "Disconnected"
+```
+
 ## Configuration Management
 
 ### Environment Variables

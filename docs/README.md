@@ -47,24 +47,41 @@ See `.env.sample` for a complete list of required environment variables:
 
 ## Recent Improvements
 
+### Watchdog & Recovery
+
+- **Consecutive failure detection** - Reconnects after 3 failed polls
+- **Watchdog timeout** - Forces reconnect if no response for 30 seconds
+- **Prevents stuck states** - Especially during rapid command sequences
+- **System state tracking** - Publishes detailed connection state to MQTT
+
+### Overheat Protection
+
+- **Automatic safety shutoff** - Reduces power to level 1 at 256°C
+- **60-second lockout** - Blocks level/temp/mode commands during cooldown
+- **Power restoration** - Automatically restores original level after lockout
+- **Persistent state** - Maintains overheat status for full 60s regardless of temperature
+- **Emergency override** - Start/stop commands still work during lockout
+
 ### Error Handling & Reliability
 
-- Automatic BLE reconnection on connection loss
+- Automatic BLE reconnection on connection loss with exponential backoff
 - MQTT publish acknowledgment with 5-second timeout
 - Comprehensive error logging and recovery
-- CCCD (Client Characteristic Configuration Descriptor) enabled for reliable notifications
+- System state published to MQTT (Connected, Disconnected, Reconnecting, Overheat Active, etc.)
 
 ### BLE Communication
 
 - Polling loop for notifications (100ms intervals, 1s timeout)
 - Improved checksum calculation
 - Better error differentiation (disconnection vs timeout vs general errors)
+- Connection retry with configurable timeout and delay
 
 ### MQTT Integration
 
 - `on_disconnect` callback for broker connection monitoring
-- `on_publish` callback for message delivery tracking
+- `on_publish` callback for message delivery tracking (disabled by default - too noisy)
 - Try-catch blocks around MQTT operations
+- Detailed status reporting with system state annotations
 - Offline status reporting during reconnection attempts
 
 ## Credits
