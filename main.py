@@ -330,6 +330,18 @@ def dispatch_result(result):
 
 # The callback for when a PUBLISH message is received from the server.
 def on_message(client, userdata, msg):
+    global overheat_active, overheat_start_time
+
+    # Check if overheat protection is active and blocking commands
+    if overheat_active:
+        time_remaining = overheat_lockout_time - (time.time() - overheat_start_time)
+        if time_remaining > 0:
+            # Block level/temperature/mode changes during overheat lockout
+            if msg.topic in [f"{mqtt_prefix}/level/cmd", f"{mqtt_prefix}/temperature/cmd", f"{mqtt_prefix}/mode/cmd"]:
+                logger.warning(f"Command blocked due to overheat protection (lockout: {time_remaining:.0f}s remaining)")
+                client.publish(f"{mqtt_prefix}/status/state", f"OVERHEAT LOCKOUT: {time_remaining:.0f}s remaining")
+                return
+
     if msg.topic == f"{mqtt_prefix}/start/cmd":
         logger.info("Received START command")
         dispatch_result(vdh.start())
@@ -344,7 +356,7 @@ def on_message(client, userdata, msg):
         dispatch_result(vdh.set_level(int(msg.payload)))
     elif msg.topic == f"{mqtt_prefix}/mode/cmd":
         logger.info(f"Received MODE={msg.payload} command")
-        dispatch_result(vdh.set_mode(modes.index(msg.payload.decode('ascii')) + 1))    
+        dispatch_result(vdh.set_mode(modes.index(msg.payload.decode('ascii')) + 1))
     logger.debug(f"{msg.topic} {str(msg.payload)}")
 
 
@@ -373,6 +385,12 @@ watchdog_timeout = 30  # seconds - if no successful poll for 30s, reconnect
 consecutive_failures = 0
 max_consecutive_failures = 3  # reconnect after 3 consecutive failures
 
+# Overheat protection settings
+overheat_threshold = 255  # °C - critical temperature
+overheat_lockout_time = 60  # seconds - block MQTT commands for this long
+overheat_active = False
+overheat_start_time = 0
+
 while run:
     try:
         # Initialize or reconnect if needed
@@ -389,6 +407,27 @@ while run:
         if result is not None:
             last_successful_poll = time.time()
             consecutive_failures = 0
+
+            # Overheat protection check
+            if result.case_temperature >= overheat_threshold:
+                if not overheat_active:
+                    logger.error(f"OVERHEAT DETECTED: case_temperature={result.case_temperature}°C >= {overheat_threshold}°C")
+                    logger.error("Reducing power to level 1 and locking controls for 60s")
+                    overheat_active = True
+                    overheat_start_time = time.time()
+
+                    # Immediately reduce power to 1
+                    try:
+                        vdh.set_level(1)
+                        client.publish(f"{mqtt_prefix}/status/state", "OVERHEAT PROTECTION ACTIVE - Power reduced to 1")
+                    except Exception as e:
+                        logger.error(f"Failed to reduce power during overheat: {e}")
+                else:
+                    # Check if lockout period has expired
+                    if time.time() - overheat_start_time >= overheat_lockout_time:
+                        logger.info("Overheat lockout period expired, controls re-enabled")
+                        overheat_active = False
+
             dispatch_result(result)
         else:
             consecutive_failures += 1
