@@ -419,34 +419,34 @@ while run:
             consecutive_failures = 0
 
             # Overheat protection check
-            if result.case_temperature >= overheat_threshold:
-                if not overheat_active:
-                    logger.error(f"OVERHEAT DETECTED: case_temperature={result.case_temperature}°C >= {overheat_threshold}°C")
-                    logger.error("Reducing power to level 1 and locking controls for 60s")
-                    overheat_active = True
-                    overheat_start_time = time.time()
-                    overheat_previous_level = result.set_level  # Save current level
-                    system_state = "Overheat Active"
+            if overheat_active:
+                # Check if lockout period has expired
+                if time.time() - overheat_start_time >= overheat_lockout_time:
+                    logger.info("Overheat lockout period expired, controls re-enabled")
+                    overheat_active = False
+                    system_state = "Connected"
+                    # Restore previous level
+                    if overheat_previous_level is not None:
+                        try:
+                            logger.info(f"Restoring power level to {overheat_previous_level}")
+                            vdh.set_level(overheat_previous_level)
+                        except Exception as e:
+                            logger.error(f"Failed to restore power level: {e}")
+                        overheat_previous_level = None
+            elif result.case_temperature >= overheat_threshold:
+                # Activate overheat protection
+                logger.error(f"OVERHEAT DETECTED: case_temperature={result.case_temperature}°C >= {overheat_threshold}°C")
+                logger.error("Reducing power to level 1 and locking controls for 60s")
+                overheat_active = True
+                overheat_start_time = time.time()
+                overheat_previous_level = result.set_level  # Save current level
+                system_state = "Overheat Active"
 
-                    # Immediately reduce power to 1
-                    try:
-                        vdh.set_level(1)
-                    except Exception as e:
-                        logger.error(f"Failed to reduce power during overheat: {e}")
-                else:
-                    # Check if lockout period has expired
-                    if time.time() - overheat_start_time >= overheat_lockout_time:
-                        logger.info("Overheat lockout period expired, controls re-enabled")
-                        overheat_active = False
-                        system_state = "Connected"
-                        # Restore previous level
-                        if overheat_previous_level is not None:
-                            try:
-                                logger.info(f"Restoring power level to {overheat_previous_level}")
-                                vdh.set_level(overheat_previous_level)
-                            except Exception as e:
-                                logger.error(f"Failed to restore power level: {e}")
-                            overheat_previous_level = None
+                # Immediately reduce power to 1
+                try:
+                    vdh.set_level(1)
+                except Exception as e:
+                    logger.error(f"Failed to reduce power during overheat: {e}")
 
             dispatch_result(result)
         else:
