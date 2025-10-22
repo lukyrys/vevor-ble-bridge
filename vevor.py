@@ -2,13 +2,14 @@
 # 2024 Bartosz Derleta <bartosz@derleta.com>
 
 import os
-from bluepy.btle import Peripheral, DefaultDelegate, Scanner
+from bluepy.btle import Peripheral, DefaultDelegate, Scanner, BTLEDisconnectError
 import threading
 import time
 import random
 import math
 import struct
 import sys
+import multiprocessing
 
 
 def _u8tonumber(e):
@@ -64,8 +65,12 @@ class _DieselHeaterNotification:
             self.running_state = _u8tonumber(je[3])  # Is running at all?
             self.error = _u8tonumber(je[4])
             self.error_msg = self._error_strings[self.error]
-            self.running_step = _u8tonumber(je[5])  # Detailed state when running
-            self.running_step_msg = self._running_step_strings[self.running_step]
+            self.running_step = _u8tonumber(
+                je[5]
+            )  # Detailed state when running
+            self.running_step_msg = self._running_step_strings[
+                self.running_step
+            ]
             self.altitude = _u8tonumber(je[6]) + 256 * _u8tonumber(je[7])
             self.running_mode = _u8tonumber(je[8])  # Temperature / Level mode
             match self.running_mode:
@@ -80,7 +85,9 @@ class _DieselHeaterNotification:
                     self.set_level = _u8tonumber(je[10]) + 1
                 case _:
                     raise RuntimeError("Unrecognized running mode")
-            self.supply_voltage = (256 * _u8tonumber(je[12]) + _u8tonumber(je[11])) / 10
+            self.supply_voltage = (
+                256 * _u8tonumber(je[12]) + _u8tonumber(je[11])
+            ) / 10
             self.case_temperature = _UnsignToSign(256 * je[14] + je[13])
             self.cab_temperature = _UnsignToSign(256 * je[16] + je[15])
             self.md = 1
@@ -89,7 +96,9 @@ class _DieselHeaterNotification:
             self.error = _u8tonumber(je[17])
             self.error_msg = self._error_strings_alt[self.error]
             self.running_step = _u8tonumber(je[5])
-            self.running_step_msg = self._running_step_strings[self.running_step]
+            self.running_step_msg = self._running_step_strings[
+                self.running_step
+            ]
             self.altitude = _u8tonumber(je[6]) + 256 * _u8tonumber(je[7])
             self.running_mode = _u8tonumber(je[8])
             match self.running_mode:
@@ -104,7 +113,9 @@ class _DieselHeaterNotification:
                     self.set_level = _u8tonumber(je[10]) + 1
                 case _:
                     raise RuntimeError("Unrecognized running mode")
-            self.supply_voltage = (256 * _u8tonumber(je[12]) + _u8tonumber(je[11])) / 10
+            self.supply_voltage = (
+                256 * _u8tonumber(je[12]) + _u8tonumber(je[11])
+            ) / 10
             self.case_temperature = _UnsignToSign(256 * je[14] + je[13])
             self.cab_temperature = _UnsignToSign(256 * je[16] + je[15])
             self.md = 3
@@ -118,6 +129,7 @@ class _DieselHeaterNotification:
 
 
 class _DieselHeaterDelegate(DefaultDelegate):
+
     def __init__(self, parent):
         self.parent = parent
 
@@ -130,18 +142,63 @@ class DieselHeater:
     _characteristic_uuid = "0000ffe1-0000-1000-8000-00805f9b34fb"
     _last_notification = None
 
-    def __init__(self, mac_address: str, passkey: int):
+    def __init__(self, mac_address: str, passkey: int, timeout_sec: int = 10, retry_delay: float = 1.0):
         self.mac_address = mac_address
         self.passkey = passkey
-        self.peripheral = Peripheral(mac_address, "public")
+
+        start = time.time()
+        while True:
+            try:
+                # English: try to connect
+                self.peripheral = Peripheral(mac_address, "public")
+                break
+            except BTLEDisconnectError:
+                # English: if overall timeout exceeded, raise
+                if time.time() - start >= timeout_sec:
+                    raise TimeoutError(f"BLE connect timed out after {timeout_sec}s")
+                # English: wait before next attempt
+                time.sleep(retry_delay)
+
+        # English: now discover service & characteristic
         self.service = self.peripheral.getServiceByUUID(self._service_uuid)
         if self.service is None:
             raise RuntimeError("Requested service is not supported by peripheral")
-        self.characteristic = self.service.getCharacteristics(
-            self._characteristic_uuid
-        )[0]
+
+        self.characteristic = self.service.getCharacteristics(self._characteristic_uuid)[0]
         if self.characteristic is None:
             raise RuntimeError("Requested characteristic is not supported by service")
+
+        self.peripheral.setDelegate(_DieselHeaterDelegate(self))
+
+    def disconnect(self):
+        """Disconnect from the BLE device"""
+        try:
+            if hasattr(self, 'peripheral') and self.peripheral:
+                self.peripheral.disconnect()
+        except Exception:
+            pass
+
+    def reconnect(self, timeout_sec: int = 10, retry_delay: float = 1.0):
+        """Reconnect to the BLE device"""
+        self.disconnect()
+        start = time.time()
+        while True:
+            try:
+                self.peripheral = Peripheral(self.mac_address, "public")
+                break
+            except BTLEDisconnectError:
+                if time.time() - start >= timeout_sec:
+                    raise TimeoutError(f"BLE reconnect timed out after {timeout_sec}s")
+                time.sleep(retry_delay)
+
+        self.service = self.peripheral.getServiceByUUID(self._service_uuid)
+        if self.service is None:
+            raise RuntimeError("Requested service is not supported by peripheral")
+
+        self.characteristic = self.service.getCharacteristics(self._characteristic_uuid)[0]
+        if self.characteristic is None:
+            raise RuntimeError("Requested characteristic is not supported by service")
+
         self.peripheral.setDelegate(_DieselHeaterDelegate(self))
 
     def _send_command(self, command: int, argument: int, n: int):
@@ -161,8 +218,16 @@ class DieselHeater:
         response = self.characteristic.write(
             o, withResponse=True
         )  # returns sth like "{'rsp': ['wr']}"
-        if self.peripheral.waitForNotifications(1) and self._last_notification:
-            return self._last_notification
+        try:
+            if (
+                self.peripheral.waitForNotifications(1)
+                and self._last_notification
+            ):
+                return self._last_notification
+        except BTLEDisconnectError as e:
+            raise BTLEDisconnectError(f"BLE disconnected during command: {e}")
+        except Exception as e:
+            raise RuntimeError(f"Error waiting for notification: {e}")
         return None
 
     def get_status(self):
@@ -179,8 +244,9 @@ class DieselHeater:
         if (level < 1) or (level > 36):
             raise RuntimeError("Invalid level")
         return self._send_command(4, level, 85)
-        
+
     def set_mode(self, mode):
         if (mode < 1) or (mode > 2):
             raise RuntimeError("Invalid mode")
-        return self._send_command(2, mode, 85)    
+        return self._send_command(2, mode, 85)
+

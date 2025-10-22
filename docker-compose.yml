@@ -2,8 +2,9 @@ version: '3.6'
 services:
     vevor-ble-bridge:
         image: vevor-ble-bridge
+        container_name: vevor_bridge
         network_mode: host
-        restart: unless-stopped
+        restart: always
         cap_add:
             - NET_ADMIN
             - NET_RAW
@@ -17,3 +18,9 @@ services:
             MQTT_USERNAME: ${MQTT_USERNAME}
             MQTT_PASSWORD: ${MQTT_PASSWORD}
             MQTT_PREFIX: ${MQTT_PREFIX}
+    vevor-restarter:
+        image: docker
+        container_name: vevor_bridge_restarter
+        volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+        command: ["/bin/sh", "-c", "while true; do sleep 3600; docker restart vevor_bridge; done"]
+        restart: unless-stopped

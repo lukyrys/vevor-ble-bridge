@@ -9,6 +9,7 @@ import time
 import vevor
 import os
 import sys
+from bluepy.btle import BTLEDisconnectError
 
 # = Configuration
 # == BLE bridge
@@ -327,10 +328,53 @@ def on_message(client, userdata, msg):
 
 logger = init_logger()
 client = init_client()
-vdh = vevor.DieselHeater(ble_mac_address, ble_passkey)
+vdh = None
 client.loop_start()
 
+# Connection retry settings
+max_reconnect_attempts = 5
+reconnect_delay = 5  # seconds
+reconnect_attempt = 0
+
 while run:
-    result = vdh.get_status()
-    dispatch_result(result)
-    time.sleep(ble_poll_interval)
+    try:
+        # Initialize or reconnect if needed
+        if vdh is None:
+            logger.info(f"Connecting to BLE device {ble_mac_address}...")
+            vdh = vevor.DieselHeater(ble_mac_address, ble_passkey)
+            logger.info("Successfully connected to BLE device")
+            reconnect_attempt = 0
+
+        # Get status and dispatch
+        result = vdh.get_status()
+        dispatch_result(result)
+        time.sleep(ble_poll_interval)
+
+    except BTLEDisconnectError as e:
+        logger.error(f"BLE disconnected: {e}")
+        vdh = None
+        # Publish offline status to MQTT
+        client.publish(f"{mqtt_prefix}/status/state", "Disconnected - attempting reconnect")
+        reconnect_attempt += 1
+
+        if reconnect_attempt >= max_reconnect_attempts:
+            logger.error(f"Failed to reconnect after {max_reconnect_attempts} attempts")
+            client.publish(f"{mqtt_prefix}/status/state", "Connection failed - retrying")
+            reconnect_attempt = 0
+            time.sleep(reconnect_delay * 3)  # Wait longer before trying again
+        else:
+            logger.info(f"Attempting to reconnect in {reconnect_delay}s (attempt {reconnect_attempt}/{max_reconnect_attempts})...")
+            time.sleep(reconnect_delay)
+
+    except TimeoutError as e:
+        logger.error(f"BLE timeout: {e}")
+        vdh = None
+        client.publish(f"{mqtt_prefix}/status/state", "Timeout - reconnecting")
+        time.sleep(reconnect_delay)
+
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        logger.exception("Full traceback:")
+        vdh = None
+        client.publish(f"{mqtt_prefix}/status/state", "Error - reconnecting")
+        time.sleep(reconnect_delay)
