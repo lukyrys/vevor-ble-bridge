@@ -170,6 +170,9 @@ class DieselHeater:
 
         self.peripheral.setDelegate(_DieselHeaterDelegate(self))
 
+        # Enable notifications by writing to CCCD (Client Characteristic Configuration Descriptor)
+        self.peripheral.writeCharacteristic(self.characteristic.getHandle() + 1, b'\x01\x00', withResponse=True)
+
     def disconnect(self):
         """Disconnect from the BLE device"""
         try:
@@ -201,6 +204,9 @@ class DieselHeater:
 
         self.peripheral.setDelegate(_DieselHeaterDelegate(self))
 
+        # Enable notifications by writing to CCCD (Client Characteristic Configuration Descriptor)
+        self.peripheral.writeCharacteristic(self.characteristic.getHandle() + 1, b'\x01\x00', withResponse=True)
+
     def _send_command(self, command: int, argument: int, n: int):
         o = bytearray([0xAA, n % 256, 0, 0, 0, 0, 0, 0])
         if 136 == n:
@@ -212,18 +218,20 @@ class DieselHeater:
         o[4] = command % 256
         o[5] = argument % 256
         o[6] = math.floor(argument / 256)
-        o[7] = o[2] + o[3] + o[4] + o[5] + o[6]
+        o[7] = sum(o[:7]) % 256
         # print("> " + o.hex(' ', 1))
         self._last_notification = None
         response = self.characteristic.write(
             o, withResponse=True
         )  # returns sth like "{'rsp': ['wr']}"
+
+        # Wait up to 1 second for notification with polling
+        start = time.time()
         try:
-            if (
-                self.peripheral.waitForNotifications(1)
-                and self._last_notification
-            ):
-                return self._last_notification
+            while time.time() - start < 1:
+                if self.peripheral.waitForNotifications(0.1):
+                    if self._last_notification:
+                        return self._last_notification
         except BTLEDisconnectError as e:
             raise BTLEDisconnectError(f"BLE disconnected during command: {e}")
         except Exception as e:
