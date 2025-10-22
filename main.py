@@ -390,7 +390,7 @@ consecutive_failures = 0
 max_consecutive_failures = 3  # reconnect after 3 consecutive failures
 
 # Overheat protection settings
-overheat_threshold = 255  # °C - critical temperature
+overheat_threshold = 256  # °C - critical temperature
 overheat_lockout_time = 60  # seconds - block MQTT commands for this long
 overheat_active = False
 overheat_start_time = 0
