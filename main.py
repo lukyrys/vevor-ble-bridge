@@ -367,6 +367,12 @@ max_reconnect_attempts = 5
 reconnect_delay = 5  # seconds
 reconnect_attempt = 0
 
+# Watchdog settings
+last_successful_poll = time.time()
+watchdog_timeout = 30  # seconds - if no successful poll for 30s, reconnect
+consecutive_failures = 0
+max_consecutive_failures = 3  # reconnect after 3 consecutive failures
+
 while run:
     try:
         # Initialize or reconnect if needed
@@ -378,7 +384,27 @@ while run:
 
         # Get status and dispatch
         result = vdh.get_status()
-        dispatch_result(result)
+
+        # Watchdog: check if we got valid result
+        if result is not None:
+            last_successful_poll = time.time()
+            consecutive_failures = 0
+            dispatch_result(result)
+        else:
+            consecutive_failures += 1
+            logger.warning(f"No response from device (failure {consecutive_failures}/{max_consecutive_failures})")
+
+            # Check if we exceeded failure threshold
+            if consecutive_failures >= max_consecutive_failures:
+                logger.error(f"Device not responding after {max_consecutive_failures} attempts, forcing reconnect")
+                raise RuntimeError("Device not responding - forcing reconnect")
+
+        # Watchdog: check if too much time passed since last successful poll
+        time_since_last_poll = time.time() - last_successful_poll
+        if time_since_last_poll > watchdog_timeout:
+            logger.error(f"Watchdog timeout: no successful poll for {time_since_last_poll:.1f}s (limit {watchdog_timeout}s)")
+            raise RuntimeError("Watchdog timeout - forcing reconnect")
+
         time.sleep(ble_poll_interval)
 
     except BTLEDisconnectError as e:
@@ -403,9 +429,18 @@ while run:
         client.publish(f"{mqtt_prefix}/status/state", "Timeout - reconnecting")
         time.sleep(reconnect_delay)
 
+    except RuntimeError as e:
+        # Watchdog or other runtime errors
+        logger.error(f"Runtime error: {e}")
+        vdh = None
+        client.publish(f"{mqtt_prefix}/status/state", "Connection issue - reconnecting")
+        consecutive_failures = 0
+        time.sleep(reconnect_delay)
+
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
         logger.exception("Full traceback:")
         vdh = None
         client.publish(f"{mqtt_prefix}/status/state", "Error - reconnecting")
+        consecutive_failures = 0
         time.sleep(reconnect_delay)
