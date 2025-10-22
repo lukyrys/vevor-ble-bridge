@@ -394,6 +394,7 @@ overheat_threshold = 255  # °C - critical temperature
 overheat_lockout_time = 60  # seconds - block MQTT commands for this long
 overheat_active = False
 overheat_start_time = 0
+overheat_previous_level = None  # Store original level to restore after lockout
 
 # System state tracking
 system_state = "Connected"  # Connected, Reconnecting, Disconnected, Overheat Active, etc.
@@ -424,6 +425,7 @@ while run:
                     logger.error("Reducing power to level 1 and locking controls for 60s")
                     overheat_active = True
                     overheat_start_time = time.time()
+                    overheat_previous_level = result.set_level  # Save current level
                     system_state = "Overheat Active"
 
                     # Immediately reduce power to 1
@@ -437,6 +439,14 @@ while run:
                         logger.info("Overheat lockout period expired, controls re-enabled")
                         overheat_active = False
                         system_state = "Connected"
+                        # Restore previous level
+                        if overheat_previous_level is not None:
+                            try:
+                                logger.info(f"Restoring power level to {overheat_previous_level}")
+                                vdh.set_level(overheat_previous_level)
+                            except Exception as e:
+                                logger.error(f"Failed to restore power level: {e}")
+                            overheat_previous_level = None
 
             dispatch_result(result)
         else:
