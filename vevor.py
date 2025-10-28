@@ -215,20 +215,32 @@ class DieselHeater:
         o[7] = o[2] + o[3] + o[4] + o[5] + o[6]
         # print("> " + o.hex(' ', 1))
         self._last_notification = None
-        response = self.characteristic.write(
-            o, withResponse=True
-        )  # returns sth like "{'rsp': ['wr']}"
         try:
-            if (
-                self.peripheral.waitForNotifications(1)
-                and self._last_notification
-            ):
-                return self._last_notification
+            response = self.characteristic.write(
+                o, withResponse=True
+            )  # returns sth like "{'rsp': ['wr']}"
         except BTLEDisconnectError as e:
+            logging.getLogger(__name__).debug(f"BLE disconnected during write: {e}")
+            raise BTLEDisconnectError(f"BLE disconnected during write: {e}")
+        except Exception as e:
+            logging.getLogger(__name__).debug(f"Error writing to characteristic: {e}")
+            raise RuntimeError(f"Error writing to characteristic: {e}")
+
+        # Wait for notification with timeout
+        try:
+            wait_result = self.peripheral.waitForNotifications(1.0)
+            if wait_result and self._last_notification:
+                return self._last_notification
+            else:
+                # No notification received within timeout
+                logging.getLogger(__name__).debug(f"No notification received for command {command} (timeout)")
+                return None
+        except BTLEDisconnectError as e:
+            logging.getLogger(__name__).debug(f"BLE disconnected during waitForNotifications: {e}")
             raise BTLEDisconnectError(f"BLE disconnected during command: {e}")
         except Exception as e:
+            logging.getLogger(__name__).debug(f"Error waiting for notification: {e}")
             raise RuntimeError(f"Error waiting for notification: {e}")
-        return None
 
     def get_status(self):
         # todo: mode 136
