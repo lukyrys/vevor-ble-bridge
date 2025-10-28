@@ -268,7 +268,7 @@ def on_disconnect(client, userdata, rc):
 
 
 def dispatch_result(result):
-    global system_state
+    global system_state, mqtt_publish_failures
     stop_pub = False
     start_pub = False
     level_pub = False
@@ -287,12 +287,15 @@ def dispatch_result(result):
             r = info.wait_for_publish(5)
             if not r:
                 logger.debug("Publish successful (ACK received)")
+                mqtt_publish_failures = 0  # Reset failure counter on success
             else:
                 # If wait_for_publish() returns True, that indicates a timeout or failure
-                logger.debug("Publish did not complete (possible disconnection or timeout)")
+                mqtt_publish_failures += 1
+                logger.warning(f"MQTT publish timeout/failure (count: {mqtt_publish_failures}/{max_mqtt_publish_failures})")
 
         except Exception as e:
-            logger.debug(f"Exception while client.publish() = {e}")
+            mqtt_publish_failures += 1
+            logger.warning(f"MQTT publish exception: {e} (count: {mqtt_publish_failures}/{max_mqtt_publish_failures})")
 
         client.publish(f"{mqtt_prefix}/room_temperature/state", result.cab_temperature)
         if result.running_mode:
@@ -402,6 +405,12 @@ last_successful_poll = time.time()
 watchdog_timeout = 30  # seconds - if no successful poll for 30s, reconnect
 consecutive_failures = 0
 max_consecutive_failures = 3  # reconnect after 3 consecutive failures
+
+# MQTT health check
+last_mqtt_health_check = time.time()
+mqtt_health_check_interval = 60  # seconds - check MQTT health every minute
+mqtt_publish_failures = 0
+max_mqtt_publish_failures = 3  # reconnect MQTT after 3 failed publishes
 
 # Overheat protection settings
 overheat_threshold = int(os.environ.get("OVERHEAT_THRESHOLD", 256))  # °C - critical temperature
@@ -556,6 +565,36 @@ while run:
             logger.error(f"Debug: consecutive_failures={consecutive_failures}, overheat_active={overheat_active}")
             logger.error(f"Forcing BLE reconnection...")
             raise RuntimeError("Watchdog timeout - forcing reconnect")
+
+        # MQTT health check: periodically verify MQTT is working
+        if time.time() - last_mqtt_health_check >= mqtt_health_check_interval:
+            last_mqtt_health_check = time.time()
+
+            if not client.is_connected():
+                logger.error("MQTT health check FAILED: client reports disconnected")
+                logger.error("Forcing MQTT reconnection...")
+                try:
+                    client.disconnect()
+                    time.sleep(2)
+                    client.reconnect()
+                    logger.info("MQTT reconnected successfully")
+                    mqtt_publish_failures = 0
+                except Exception as mqtt_err:
+                    logger.error(f"MQTT reconnect failed: {mqtt_err}")
+
+            elif mqtt_publish_failures >= max_mqtt_publish_failures:
+                logger.error(f"MQTT health check FAILED: {mqtt_publish_failures} consecutive publish failures")
+                logger.error("Forcing MQTT reconnection...")
+                try:
+                    client.disconnect()
+                    time.sleep(2)
+                    client.reconnect()
+                    logger.info("MQTT reconnected successfully after publish failures")
+                    mqtt_publish_failures = 0
+                except Exception as mqtt_err:
+                    logger.error(f"MQTT reconnect failed: {mqtt_err}")
+            else:
+                logger.debug(f"MQTT health check OK: connected={client.is_connected()}, failures={mqtt_publish_failures}")
 
         time.sleep(ble_poll_interval)
 
