@@ -487,8 +487,19 @@ while run:
             # Update current temperature for level limiting
             current_case_temperature = result.case_temperature
 
-            # Check if temperature limiting status changed
+            # Check if temperature limiting status changed or current level exceeds limit
             current_max_allowed = get_max_allowed_level(current_case_temperature)
+
+            # If current level exceeds max allowed, reduce it immediately
+            if result.set_level > current_max_allowed:
+                logger.warning(f"Current level {result.set_level} exceeds limit {current_max_allowed} at {current_case_temperature}°C - reducing")
+                try:
+                    vdh.set_level(current_max_allowed)
+                    logger.info(f"Level automatically reduced to {current_max_allowed}")
+                except Exception as e:
+                    logger.error(f"Failed to reduce level: {e}")
+
+            # Publish status update when max allowed level changes
             if current_max_allowed != last_max_allowed_level:
                 if current_max_allowed < 36:
                     # Temperature limiting is now active or level changed
