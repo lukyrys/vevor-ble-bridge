@@ -39,11 +39,16 @@ The Vevor BLE Bridge connects to a Vevor diesel heater via Bluetooth Low Energy 
 
 See `.env.sample` for a complete list of required environment variables:
 
+**Required:**
 - `BLE_MAC_ADDRESS` - MAC address of your Vevor heater
-- `BLE_PASSKEY` - Heater passkey (default: 1234)
 - `MQTT_HOST` - MQTT broker address
-- `MQTT_USERNAME` / `MQTT_PASSWORD` - MQTT credentials
 - `DEVICE_NAME` - Friendly name for Home Assistant
+
+**Optional:**
+- `BLE_PASSKEY` - Heater passkey (default: 1234)
+- `MQTT_USERNAME` / `MQTT_PASSWORD` - MQTT credentials
+- `OVERHEAT_THRESHOLD` - Critical temperature in °C (default: 256)
+- `TEMP_LEVEL_LIMITING` - Enable progressive level limiting (default: true)
 
 ## Recent Improvements
 
@@ -56,11 +61,20 @@ See `.env.sample` for a complete list of required environment variables:
 
 ### Overheat Protection
 
-- **Automatic safety shutoff** - Reduces power to level 1 at 256°C
-- **60-second lockout** - Blocks level/temp/mode commands during cooldown
-- **Power restoration** - Automatically restores original level after lockout
-- **Persistent state** - Maintains overheat status for full 60s regardless of temperature
+- **Progressive level limiting** - Automatically limits maximum power level based on temperature (configurable)
+  - < 235°C: No limitation (full power available)
+  - 235-240°C: Max level 10
+  - 240-245°C: Max level 8
+  - 245-250°C: Max level 6
+  - 250-253°C: Max level 4
+  - 253-256°C: Max level 2
+  - >= 256°C: Force level 1 (critical overheat)
+- **Automatic safety shutoff** - Reduces power to level 1 at critical temperature (default 256°C, configurable)
+- **60-second lockout** - Blocks level/temp/mode commands during overheat cooldown
+- **Extended lockout** - If temperature continues rising at level 1, extends lockout to 5 minutes
+- **Persistent state** - Maintains overheat status for full lockout period regardless of temperature
 - **Emergency override** - Start/stop commands still work during lockout
+- **No auto-restore** - Level remains at 1 after lockout, requires manual increase (prevents repeat overheat)
 
 ### Error Handling & Reliability
 

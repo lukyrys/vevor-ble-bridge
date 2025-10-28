@@ -404,7 +404,7 @@ consecutive_failures = 0
 max_consecutive_failures = 3  # reconnect after 3 consecutive failures
 
 # Overheat protection settings
-overheat_threshold = 256  # °C - critical temperature
+overheat_threshold = int(os.environ.get("OVERHEAT_THRESHOLD", 256))  # °C - critical temperature
 overheat_lockout_time = 60  # seconds - initial lockout period
 overheat_extended_lockout = 300  # seconds - extended lockout if temp still rising
 overheat_active = False
@@ -413,24 +413,29 @@ overheat_last_temp = 0  # Track temperature trend
 overheat_temp_rising_count = 0  # Count how many times temp rose during lockout
 
 # Temperature-based level limiting
+temp_limiting_enabled = os.environ.get("TEMP_LEVEL_LIMITING", "true").lower() in ["true", "1", "yes"]
 current_case_temperature = 0  # Track current temperature for level limiting
 
 def get_max_allowed_level(temperature):
     """
     Calculate maximum allowed level based on current temperature.
     Progressive limitation to prevent overheat.
+    Can be disabled via TEMP_LEVEL_LIMITING=false
     """
-    if temperature >= 256:
+    if not temp_limiting_enabled:
+        return 36  # Limiting disabled - no restriction
+
+    if temperature >= overheat_threshold:
         return 1  # Critical - force minimum
-    elif temperature >= 253:
+    elif temperature >= overheat_threshold - 3:  # 253°C (default)
         return 2  # Very high - severely limited
-    elif temperature >= 250:
+    elif temperature >= overheat_threshold - 6:  # 250°C (default)
         return 4  # High - significantly limited
-    elif temperature >= 245:
+    elif temperature >= overheat_threshold - 11:  # 245°C (default)
         return 6  # Elevated - moderately limited
-    elif temperature >= 240:
+    elif temperature >= overheat_threshold - 16:  # 240°C (default)
         return 8  # Warm - slightly limited
-    elif temperature >= 235:
+    elif temperature >= overheat_threshold - 21:  # 235°C (default)
         return 10  # Getting warm - minor limitation
     else:
         return 36  # Safe - no limitation
@@ -440,8 +445,6 @@ system_state = "Connected"  # Connected, Reconnecting, Disconnected, Overheat Ac
 
 while run:
     try:
-        global current_case_temperature
-
         # Initialize or reconnect if needed
         if vdh is None:
             system_state = "Reconnecting"
