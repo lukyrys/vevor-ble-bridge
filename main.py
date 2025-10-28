@@ -367,14 +367,13 @@ def on_message(client, userdata, msg):
         max_allowed = get_max_allowed_level(current_case_temperature)
 
         if requested_level > max_allowed:
-            # Only log/publish warning if >30s since last warning (avoid spam)
+            # Completely ignore commands that exceed temperature limit to prevent MQTT spam
             if time.time() - last_level_limit_warning > 30:
-                logger.warning(f"Level {requested_level} reduced to {max_allowed} due to temperature {current_case_temperature}°C")
-                client.publish(f"{mqtt_prefix}/status/state", f"Level limited to {max_allowed} (temp: {current_case_temperature}°C)")
+                logger.warning(f"Level {requested_level} command ignored due to temperature limit (max: {max_allowed}, temp: {current_case_temperature}°C)")
                 last_level_limit_warning = time.time()
-            requested_level = max_allowed
+            return  # Ignore the command completely
 
-        logger.info(f"Received LEVEL={requested_level} command (requested: {int(msg.payload)}, temp: {current_case_temperature}°C)")
+        logger.info(f"Received LEVEL={requested_level} command (temp: {current_case_temperature}°C)")
         dispatch_result(vdh.set_level(requested_level))
     elif msg.topic == f"{mqtt_prefix}/temperature/cmd":
         logger.info(f"Received TEMPERATURE={int(msg.payload)} command")
