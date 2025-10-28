@@ -282,6 +282,7 @@ def dispatch_result(result):
         # Add system state if not in normal connected state
         if system_state != "Connected":
             msg = f"{msg} [{system_state}]"
+        logger.debug(f"Publishing status: '{msg}' (system_state: '{system_state}')")
         try:
             info = client.publish(f"{mqtt_prefix}/status/state", msg, qos=1)
             r = info.wait_for_publish(5)
@@ -441,15 +442,15 @@ def get_max_allowed_level(temperature):
 
     if temperature >= overheat_threshold:
         return 1  # Critical - force minimum
-    elif temperature >= overheat_threshold - 3:  # 253°C (default)
+    elif temperature >= overheat_threshold - 1:  # 255°C (default)
         return 2  # Very high - severely limited
-    elif temperature >= overheat_threshold - 6:  # 250°C (default)
+    elif temperature >= overheat_threshold - 3:  # 253°C (default)
         return 4  # High - significantly limited
-    elif temperature >= overheat_threshold - 11:  # 245°C (default)
+    elif temperature >= overheat_threshold - 5:  # 251°C (default)
         return 6  # Elevated - moderately limited
-    elif temperature >= overheat_threshold - 16:  # 240°C (default)
+    elif temperature >= overheat_threshold - 8:  # 248°C (default)
         return 8  # Warm - slightly limited
-    elif temperature >= overheat_threshold - 21:  # 235°C (default)
+    elif temperature >= overheat_threshold - 11:  # 245°C (default)
         return 10  # Getting warm - minor limitation
     else:
         return 36  # Safe - no limitation

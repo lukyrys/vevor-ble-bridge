@@ -62,12 +62,12 @@ See `.env.sample` for a complete list of required environment variables:
 ### Overheat Protection
 
 - **Progressive level limiting** - Automatically limits maximum power level based on temperature (configurable)
-  - < 235°C: No limitation (full power available)
-  - 235-240°C: Max level 10
-  - 240-245°C: Max level 8
-  - 245-250°C: Max level 6
-  - 250-253°C: Max level 4
-  - 253-256°C: Max level 2
+  - < 245°C: No limitation (full power available)
+  - 245-248°C: Max level 10
+  - 248-251°C: Max level 8
+  - 251-253°C: Max level 6
+  - 253-255°C: Max level 4
+  - 255-256°C: Max level 2
   - >= 256°C: Force level 1 (critical overheat)
 - **Automatic safety shutoff** - Reduces power to level 1 at critical temperature (default 256°C, configurable)
 - **60-second lockout** - Blocks level/temp/mode commands during overheat cooldown
