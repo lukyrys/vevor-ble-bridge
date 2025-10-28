@@ -406,11 +406,19 @@ while run:
         # Initialize or reconnect if needed
         if vdh is None:
             system_state = "Reconnecting"
-            logger.info(f"Connecting to BLE device {ble_mac_address}...")
-            vdh = vevor.DieselHeater(ble_mac_address, ble_passkey)
-            logger.info("Successfully connected to BLE device")
-            system_state = "Connected"
-            reconnect_attempt = 0
+            elapsed_since_disconnect = time.time() - last_successful_poll if last_successful_poll > 0 else 0
+            logger.info(f"Connecting to BLE device {ble_mac_address}... (offline for {elapsed_since_disconnect:.1f}s)")
+            logger.debug(f"Reconnect context: attempt={reconnect_attempt}, overheat_active={overheat_active}")
+
+            try:
+                vdh = vevor.DieselHeater(ble_mac_address, ble_passkey)
+                logger.info(f"Successfully connected to BLE device after {elapsed_since_disconnect:.1f}s offline")
+                system_state = "Connected"
+                reconnect_attempt = 0
+            except Exception as conn_error:
+                logger.error(f"Failed to connect to BLE device: {conn_error}")
+                vdh = None
+                raise  # Re-raise to be caught by outer exception handlers
 
         # Get status and dispatch
         result = vdh.get_status()
@@ -420,15 +428,25 @@ while run:
             last_successful_poll = time.time()
             consecutive_failures = 0
 
+            # Periodic health check log every 30s
+            if int(time.time()) % 30 == 0:
+                logger.debug(f"Health check OK - temp: {result.case_temperature}°C, level: {result.set_level}, step: {result.running_step_msg}")
+
             # Check for heater's own overheat error (error code 5)
             if result.error == 5:  # Overheating error from heater
                 if not overheat_active:
                     logger.error(f"Heater reports OVERHEATING error (code 5), activating protection")
+                    logger.warning(f"Heater may stop responding during cooldown (typically 30 minutes)")
                     overheat_active = True
                     overheat_start_time = time.time()
                     overheat_last_temp = result.case_temperature
                     overheat_temp_rising_count = 0
                     system_state = "Overheat Active"
+                else:
+                    # Heater in error 5 may stop responding - log status periodically
+                    elapsed_error = time.time() - overheat_start_time
+                    if int(elapsed_error) % 60 == 0:  # Every minute
+                        logger.info(f"Heater still in error 5 (Overheating) after {elapsed_error/60:.1f} minutes")
 
             # Overheat protection check
             if overheat_active:
@@ -475,23 +493,30 @@ while run:
             dispatch_result(result)
         else:
             consecutive_failures += 1
-            logger.warning(f"No response from device (failure {consecutive_failures}/{max_consecutive_failures})")
+            time_since_last_poll = time.time() - last_successful_poll
+            logger.warning(f"No response from device (failure {consecutive_failures}/{max_consecutive_failures}, {time_since_last_poll:.1f}s since last success)")
+            logger.debug(f"Debug state: overheat_active={overheat_active}, system_state={system_state}, vdh={vdh is not None}")
 
             # Check if we exceeded failure threshold
             if consecutive_failures >= max_consecutive_failures:
                 logger.error(f"Device not responding after {max_consecutive_failures} attempts, forcing reconnect")
+                logger.error(f"Last successful poll was {time_since_last_poll:.1f}s ago")
                 raise RuntimeError("Device not responding - forcing reconnect")
 
         # Watchdog: check if too much time passed since last successful poll
         time_since_last_poll = time.time() - last_successful_poll
         if time_since_last_poll > watchdog_timeout:
-            logger.error(f"Watchdog timeout: no successful poll for {time_since_last_poll:.1f}s (limit {watchdog_timeout}s)")
+            logger.error(f"WATCHDOG TIMEOUT: no successful poll for {time_since_last_poll:.1f}s (limit {watchdog_timeout}s)")
+            logger.error(f"Debug: consecutive_failures={consecutive_failures}, overheat_active={overheat_active}")
+            logger.error(f"Forcing BLE reconnection...")
             raise RuntimeError("Watchdog timeout - forcing reconnect")
 
         time.sleep(ble_poll_interval)
 
     except BTLEDisconnectError as e:
         logger.error(f"BLE disconnected: {e}")
+        logger.error(f"Context: consecutive_failures={consecutive_failures}, time_since_last_poll={time.time() - last_successful_poll:.1f}s")
+        logger.error(f"Overheat: active={overheat_active}, last_temp={overheat_last_temp}°C")
         vdh = None
         system_state = "Disconnected"
         # Publish offline status to MQTT
@@ -500,6 +525,7 @@ while run:
 
         if reconnect_attempt >= max_reconnect_attempts:
             logger.error(f"Failed to reconnect after {max_reconnect_attempts} attempts")
+            logger.error(f"Resetting reconnect counter and waiting {reconnect_delay * 3}s before retry")
             system_state = "Connection Failed"
             client.publish(f"{mqtt_prefix}/status/state", system_state)
             reconnect_attempt = 0
@@ -511,25 +537,32 @@ while run:
 
     except TimeoutError as e:
         logger.error(f"BLE timeout: {e}")
+        logger.error(f"Context: consecutive_failures={consecutive_failures}, time_since_last_poll={time.time() - last_successful_poll:.1f}s")
         vdh = None
         system_state = "Timeout"
         client.publish(f"{mqtt_prefix}/status/state", system_state)
+        logger.info(f"Waiting {reconnect_delay}s before reconnect...")
         time.sleep(reconnect_delay)
 
     except RuntimeError as e:
         # Watchdog or other runtime errors
         logger.error(f"Runtime error: {e}")
+        logger.error(f"Context: consecutive_failures={consecutive_failures}, time_since_last_poll={time.time() - last_successful_poll:.1f}s")
+        logger.error(f"Overheat: active={overheat_active}, system_state={system_state}")
         vdh = None
         system_state = "Watchdog Triggered"
         client.publish(f"{mqtt_prefix}/status/state", system_state)
         consecutive_failures = 0
+        logger.info(f"Waiting {reconnect_delay}s before reconnect...")
         time.sleep(reconnect_delay)
 
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
+        logger.error(f"Context: consecutive_failures={consecutive_failures}, time_since_last_poll={time.time() - last_successful_poll:.1f}s")
         logger.exception("Full traceback:")
         vdh = None
         system_state = "Error"
         client.publish(f"{mqtt_prefix}/status/state", system_state)
         consecutive_failures = 0
+        logger.info(f"Waiting {reconnect_delay}s before reconnect...")
         time.sleep(reconnect_delay)
