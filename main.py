@@ -488,7 +488,6 @@ while run:
             current_case_temperature = result.case_temperature
 
             # Check if temperature limiting status changed
-            global last_max_allowed_level
             current_max_allowed = get_max_allowed_level(current_case_temperature)
             if current_max_allowed != last_max_allowed_level:
                 if current_max_allowed < 36:
