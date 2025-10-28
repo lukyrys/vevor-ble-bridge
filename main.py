@@ -428,6 +428,7 @@ overheat_temp_rising_count = 0  # Count how many times temp rose during lockout
 temp_limiting_enabled = os.environ.get("TEMP_LEVEL_LIMITING", "true").lower() in ["true", "1", "yes"]
 current_case_temperature = 0  # Track current temperature for level limiting
 last_level_limit_warning = 0  # Timestamp of last level limit warning (to avoid spam)
+last_max_allowed_level = 36  # Track max allowed level to detect changes
 
 def get_max_allowed_level(temperature):
     """
@@ -485,6 +486,27 @@ while run:
 
             # Update current temperature for level limiting
             current_case_temperature = result.case_temperature
+
+            # Check if temperature limiting status changed
+            global last_max_allowed_level
+            current_max_allowed = get_max_allowed_level(current_case_temperature)
+            if current_max_allowed != last_max_allowed_level:
+                if current_max_allowed < 36:
+                    # Temperature limiting is now active or level changed
+                    limit_msg = f"{result.running_step_msg} [Temperature limiting: max level {current_max_allowed}]"
+                    logger.info(f"Temperature limiting active: max level {current_max_allowed} (temp: {current_case_temperature}°C)")
+                    try:
+                        client.publish(f"{mqtt_prefix}/status/state", limit_msg, qos=1)
+                    except Exception as e:
+                        logger.warning(f"Failed to publish temperature limiting status: {e}")
+                elif last_max_allowed_level < 36:
+                    # Returning to normal from limited state
+                    logger.info(f"Temperature limiting deactivated (temp: {current_case_temperature}°C)")
+                    try:
+                        client.publish(f"{mqtt_prefix}/status/state", result.running_step_msg, qos=1)
+                    except Exception as e:
+                        logger.warning(f"Failed to publish temperature limiting deactivation: {e}")
+                last_max_allowed_level = current_max_allowed
 
             # Periodic health check log every 30s
             if int(time.time()) % 30 == 0:
