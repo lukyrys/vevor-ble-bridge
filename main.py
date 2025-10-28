@@ -334,7 +334,7 @@ def dispatch_result(result):
 
 # The callback for when a PUBLISH message is received from the server.
 def on_message(client, userdata, msg):
-    global overheat_active, overheat_start_time, vdh
+    global overheat_active, overheat_start_time, vdh, current_case_temperature
 
     # Check if device is connected
     if vdh is None:
@@ -359,8 +359,16 @@ def on_message(client, userdata, msg):
         logger.info("Received STOP command")
         dispatch_result(vdh.stop())
     elif msg.topic == f"{mqtt_prefix}/level/cmd":
-        logger.info(f"Received LEVEL={int(msg.payload)} command")
-        dispatch_result(vdh.set_level(int(msg.payload)))
+        requested_level = int(msg.payload)
+        max_allowed = get_max_allowed_level(current_case_temperature)
+
+        if requested_level > max_allowed:
+            logger.warning(f"Level {requested_level} reduced to {max_allowed} due to temperature {current_case_temperature}°C")
+            client.publish(f"{mqtt_prefix}/status/state", f"Level limited to {max_allowed} (temp: {current_case_temperature}°C)")
+            requested_level = max_allowed
+
+        logger.info(f"Received LEVEL={requested_level} command (requested: {int(msg.payload)}, temp: {current_case_temperature}°C)")
+        dispatch_result(vdh.set_level(requested_level))
     elif msg.topic == f"{mqtt_prefix}/temperature/cmd":
         logger.info(f"Received TEMPERATURE={int(msg.payload)} command")
         dispatch_result(vdh.set_level(int(msg.payload)))
@@ -404,11 +412,36 @@ overheat_start_time = 0
 overheat_last_temp = 0  # Track temperature trend
 overheat_temp_rising_count = 0  # Count how many times temp rose during lockout
 
+# Temperature-based level limiting
+current_case_temperature = 0  # Track current temperature for level limiting
+
+def get_max_allowed_level(temperature):
+    """
+    Calculate maximum allowed level based on current temperature.
+    Progressive limitation to prevent overheat.
+    """
+    if temperature >= 256:
+        return 1  # Critical - force minimum
+    elif temperature >= 253:
+        return 2  # Very high - severely limited
+    elif temperature >= 250:
+        return 4  # High - significantly limited
+    elif temperature >= 245:
+        return 6  # Elevated - moderately limited
+    elif temperature >= 240:
+        return 8  # Warm - slightly limited
+    elif temperature >= 235:
+        return 10  # Getting warm - minor limitation
+    else:
+        return 36  # Safe - no limitation
+
 # System state tracking
 system_state = "Connected"  # Connected, Reconnecting, Disconnected, Overheat Active, etc.
 
 while run:
     try:
+        global current_case_temperature
+
         # Initialize or reconnect if needed
         if vdh is None:
             system_state = "Reconnecting"
@@ -434,9 +467,13 @@ while run:
             last_successful_poll = time.time()
             consecutive_failures = 0
 
+            # Update current temperature for level limiting
+            current_case_temperature = result.case_temperature
+
             # Periodic health check log every 30s
             if int(time.time()) % 30 == 0:
-                logger.debug(f"Health check OK - temp: {result.case_temperature}°C, level: {result.set_level}, step: {result.running_step_msg}")
+                max_allowed = get_max_allowed_level(current_case_temperature)
+                logger.debug(f"Health check OK - temp: {current_case_temperature}°C, level: {result.set_level}, max_allowed: {max_allowed}, step: {result.running_step_msg}")
 
             # Check for heater's own overheat error (error code 5)
             if result.error == 5:  # Overheating error from heater
