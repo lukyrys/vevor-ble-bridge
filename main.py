@@ -362,12 +362,16 @@ def on_message(client, userdata, msg):
         logger.info("Received STOP command")
         dispatch_result(vdh.stop())
     elif msg.topic == f"{mqtt_prefix}/level/cmd":
+        global last_level_limit_warning
         requested_level = int(msg.payload)
         max_allowed = get_max_allowed_level(current_case_temperature)
 
         if requested_level > max_allowed:
-            logger.warning(f"Level {requested_level} reduced to {max_allowed} due to temperature {current_case_temperature}°C")
-            client.publish(f"{mqtt_prefix}/status/state", f"Level limited to {max_allowed} (temp: {current_case_temperature}°C)")
+            # Only log/publish warning if >30s since last warning (avoid spam)
+            if time.time() - last_level_limit_warning > 30:
+                logger.warning(f"Level {requested_level} reduced to {max_allowed} due to temperature {current_case_temperature}°C")
+                client.publish(f"{mqtt_prefix}/status/state", f"Level limited to {max_allowed} (temp: {current_case_temperature}°C)")
+                last_level_limit_warning = time.time()
             requested_level = max_allowed
 
         logger.info(f"Received LEVEL={requested_level} command (requested: {int(msg.payload)}, temp: {current_case_temperature}°C)")
@@ -424,6 +428,7 @@ overheat_temp_rising_count = 0  # Count how many times temp rose during lockout
 # Temperature-based level limiting
 temp_limiting_enabled = os.environ.get("TEMP_LEVEL_LIMITING", "true").lower() in ["true", "1", "yes"]
 current_case_temperature = 0  # Track current temperature for level limiting
+last_level_limit_warning = 0  # Timestamp of last level limit warning (to avoid spam)
 
 def get_max_allowed_level(temperature):
     """
@@ -566,33 +571,16 @@ while run:
             logger.error(f"Forcing BLE reconnection...")
             raise RuntimeError("Watchdog timeout - forcing reconnect")
 
-        # MQTT health check: periodically verify MQTT is working
+        # MQTT health check: periodically verify MQTT is working (but don't force reconnect unless truly needed)
         if time.time() - last_mqtt_health_check >= mqtt_health_check_interval:
             last_mqtt_health_check = time.time()
 
+            # Only log health check, don't force reconnect
+            # The library's auto-reconnect should handle disconnections
             if not client.is_connected():
-                logger.error("MQTT health check FAILED: client reports disconnected")
-                logger.error("Forcing MQTT reconnection...")
-                try:
-                    client.disconnect()
-                    time.sleep(2)
-                    client.reconnect()
-                    logger.info("MQTT reconnected successfully")
-                    mqtt_publish_failures = 0
-                except Exception as mqtt_err:
-                    logger.error(f"MQTT reconnect failed: {mqtt_err}")
-
+                logger.warning("MQTT health check: client reports disconnected (waiting for auto-reconnect)")
             elif mqtt_publish_failures >= max_mqtt_publish_failures:
-                logger.error(f"MQTT health check FAILED: {mqtt_publish_failures} consecutive publish failures")
-                logger.error("Forcing MQTT reconnection...")
-                try:
-                    client.disconnect()
-                    time.sleep(2)
-                    client.reconnect()
-                    logger.info("MQTT reconnected successfully after publish failures")
-                    mqtt_publish_failures = 0
-                except Exception as mqtt_err:
-                    logger.error(f"MQTT reconnect failed: {mqtt_err}")
+                logger.error(f"MQTT health check WARNING: {mqtt_publish_failures} consecutive publish failures")
             else:
                 logger.debug(f"MQTT health check OK: connected={client.is_connected()}, failures={mqtt_publish_failures}")
 
