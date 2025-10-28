@@ -391,10 +391,12 @@ max_consecutive_failures = 3  # reconnect after 3 consecutive failures
 
 # Overheat protection settings
 overheat_threshold = 256  # °C - critical temperature
-overheat_lockout_time = 60  # seconds - block MQTT commands for this long
+overheat_lockout_time = 60  # seconds - initial lockout period
+overheat_extended_lockout = 300  # seconds - extended lockout if temp still rising
 overheat_active = False
 overheat_start_time = 0
-overheat_previous_level = None  # Store original level to restore after lockout
+overheat_last_temp = 0  # Track temperature trend
+overheat_temp_rising_count = 0  # Count how many times temp rose during lockout
 
 # System state tracking
 system_state = "Connected"  # Connected, Reconnecting, Disconnected, Overheat Active, etc.
@@ -418,28 +420,50 @@ while run:
             last_successful_poll = time.time()
             consecutive_failures = 0
 
+            # Check for heater's own overheat error (error code 5)
+            if result.error == 5:  # Overheating error from heater
+                if not overheat_active:
+                    logger.error(f"Heater reports OVERHEATING error (code 5), activating protection")
+                    overheat_active = True
+                    overheat_start_time = time.time()
+                    overheat_last_temp = result.case_temperature
+                    overheat_temp_rising_count = 0
+                    system_state = "Overheat Active"
+
             # Overheat protection check
             if overheat_active:
+                current_lockout = overheat_lockout_time
+
+                # Monitor temperature trend during lockout
+                if result.case_temperature > overheat_last_temp + 2:  # Temp rising by >2°C
+                    overheat_temp_rising_count += 1
+                    logger.warning(f"Temperature still rising during lockout: {overheat_last_temp}°C -> {result.case_temperature}°C")
+
+                    # If temp rose 3+ times, extend lockout significantly
+                    if overheat_temp_rising_count >= 3:
+                        current_lockout = overheat_extended_lockout
+                        logger.error(f"Temperature continues rising despite level 1! Extending lockout to {overheat_extended_lockout}s")
+
+                overheat_last_temp = result.case_temperature
+
                 # Check if lockout period has expired
-                if time.time() - overheat_start_time >= overheat_lockout_time:
-                    logger.info("Overheat lockout period expired, controls re-enabled")
+                elapsed = time.time() - overheat_start_time
+                if elapsed >= current_lockout:
+                    logger.info(f"Overheat lockout period expired after {elapsed:.0f}s, controls re-enabled")
+                    logger.info(f"Temperature: {result.case_temperature}°C, Level remains at 1 (manual increase required)")
                     overheat_active = False
+                    overheat_temp_rising_count = 0
                     system_state = "Connected"
-                    # Restore previous level
-                    if overheat_previous_level is not None:
-                        try:
-                            logger.info(f"Restoring power level to {overheat_previous_level}")
-                            vdh.set_level(overheat_previous_level)
-                        except Exception as e:
-                            logger.error(f"Failed to restore power level: {e}")
-                        overheat_previous_level = None
+                    # DO NOT restore level automatically - user must manually increase
+
             elif result.case_temperature >= overheat_threshold:
                 # Activate overheat protection
                 logger.error(f"OVERHEAT DETECTED: case_temperature={result.case_temperature}°C >= {overheat_threshold}°C")
                 logger.error("Reducing power to level 1 and locking controls for 60s")
                 overheat_active = True
                 overheat_start_time = time.time()
-                overheat_previous_level = result.set_level  # Save current level
+                overheat_last_temp = result.case_temperature
+                overheat_temp_rising_count = 0
                 system_state = "Overheat Active"
 
                 # Immediately reduce power to 1
