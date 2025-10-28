@@ -499,23 +499,16 @@ while run:
                 except Exception as e:
                     logger.error(f"Failed to reduce level: {e}")
 
-            # Publish status update when max allowed level changes
+            # Update system state when max allowed level changes
             if current_max_allowed != last_max_allowed_level:
                 if current_max_allowed < 36:
                     # Temperature limiting is now active or level changed
-                    limit_msg = f"{result.running_step_msg} [Temperature limiting: max level {current_max_allowed}]"
+                    system_state = f"Temperature limiting: max level {current_max_allowed}"
                     logger.info(f"Temperature limiting active: max level {current_max_allowed} (temp: {current_case_temperature}°C)")
-                    try:
-                        client.publish(f"{mqtt_prefix}/status/state", limit_msg, qos=1)
-                    except Exception as e:
-                        logger.warning(f"Failed to publish temperature limiting status: {e}")
                 elif last_max_allowed_level < 36:
                     # Returning to normal from limited state
+                    system_state = "Connected"
                     logger.info(f"Temperature limiting deactivated (temp: {current_case_temperature}°C)")
-                    try:
-                        client.publish(f"{mqtt_prefix}/status/state", result.running_step_msg, qos=1)
-                    except Exception as e:
-                        logger.warning(f"Failed to publish temperature limiting deactivation: {e}")
                 last_max_allowed_level = current_max_allowed
 
             # Periodic health check log every 30s
