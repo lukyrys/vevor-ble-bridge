@@ -334,7 +334,13 @@ def dispatch_result(result):
 
 # The callback for when a PUBLISH message is received from the server.
 def on_message(client, userdata, msg):
-    global overheat_active, overheat_start_time
+    global overheat_active, overheat_start_time, vdh
+
+    # Check if device is connected
+    if vdh is None:
+        logger.warning(f"Command received while device disconnected: {msg.topic}")
+        client.publish(f"{mqtt_prefix}/status/state", "Disconnected - command ignored")
+        return
 
     # Check if overheat protection is active and blocking commands
     if overheat_active:
