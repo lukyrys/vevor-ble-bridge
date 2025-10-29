@@ -405,7 +405,7 @@ def on_message(client, userdata, msg):
         logger.info("Received STOP command")
         dispatch_result(vdh.stop())
     elif msg.topic == f"{mqtt_prefix}/level/cmd":
-        global last_level_limit_warning
+        global last_level_limit_warning, current_heater_level
         requested_level = int(msg.payload)
         max_allowed = get_max_allowed_level(current_case_temperature)
 
@@ -415,6 +415,11 @@ def on_message(client, userdata, msg):
                 logger.warning(f"Level {requested_level} reduced to {max_allowed} due to temperature limit (temp: {current_case_temperature}°C)")
                 last_level_limit_warning = time.time()
             requested_level = max_allowed
+
+        # Only send command if level actually changed - prevents MQTT spam
+        if requested_level == current_heater_level:
+            logger.debug(f"Level {requested_level} already set, skipping redundant command")
+            return
 
         logger.info(f"Received LEVEL={requested_level} command (temp: {current_case_temperature}°C)")
         dispatch_result(vdh.set_level(requested_level))
@@ -472,6 +477,7 @@ overheat_temp_rising_count = 0  # Count how many times temp rose during lockout
 # Temperature-based level limiting
 temp_limiting_enabled = os.environ.get("TEMP_LEVEL_LIMITING", "true").lower() in ["true", "1", "yes"]
 current_case_temperature = 0  # Track current temperature for level limiting
+current_heater_level = 0  # Track current heater level to prevent redundant commands
 last_level_limit_warning = 0  # Timestamp of last level limit warning (to avoid spam)
 last_max_allowed_level = 36  # Track max allowed level to detect changes
 
@@ -538,8 +544,9 @@ while run:
             last_successful_poll = time.time()
             consecutive_failures = 0
 
-            # Update current temperature for level limiting
+            # Update current temperature and level for tracking
             current_case_temperature = result.case_temperature
+            current_heater_level = result.set_level
 
             # Check if temperature limiting status changed or current level exceeds limit
             current_max_allowed = get_max_allowed_level(current_case_temperature)
