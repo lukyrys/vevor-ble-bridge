@@ -185,6 +185,19 @@ def publish_ha_config():
         json.dumps(temperature_limiting_conf),
     )
 
+    overheat_protection_conf = {
+        "device": get_device_conf(),
+        "expire_after": 10,
+        "name": "Overheat Protection",
+        "unique_id": f"{device_id}-024",
+        "state_topic": f"{mqtt_prefix}/overheat/state",
+        "icon": "mdi:fire-alert",
+    }
+    client.publish(
+        f"{mqtt_discovery_prefix}/sensor/{device_id}-024/config",
+        json.dumps(overheat_protection_conf),
+    )
+
     room_temperature_conf = {
         "device": get_device_conf(),
         "expire_after": 10,
@@ -312,8 +325,9 @@ def on_connect(client, userdata, flags, rc):
         ]
     )
     publish_ha_config()
-    # Initialize temperature limiting sensor
+    # Initialize temperature limiting and overheat protection sensors
     client.publish(f"{mqtt_prefix}/temp_limiting/state", "Inactive")
+    client.publish(f"{mqtt_prefix}/overheat/state", "Inactive")
 
 
 def on_disconnect(client, userdata, rc):
@@ -337,8 +351,8 @@ def dispatch_result(result):
         if result.error:
             msg = f"{msg} ({result.error_msg})"
 
-        # Add system state ONLY for connection issues (not for temperature limiting)
-        if system_state != "Connected" and not system_state.startswith("Temperature limiting"):
+        # Add system state ONLY for connection issues (not for temperature limiting or overheat)
+        if system_state != "Connected" and not system_state.startswith("Temperature limiting") and system_state != "Overheat Active":
             msg = f"{msg} [{system_state}]"
 
         logger.debug(f"Publishing status: '{msg}' (system_state: '{system_state}')")
@@ -412,7 +426,8 @@ def on_message(client, userdata, msg):
             # Block level/temperature/mode changes during overheat lockout
             if msg.topic in [f"{mqtt_prefix}/level/cmd", f"{mqtt_prefix}/temperature/cmd", f"{mqtt_prefix}/mode/cmd"]:
                 logger.warning(f"Command blocked due to overheat protection (lockout: {time_remaining:.0f}s remaining)")
-                client.publish(f"{mqtt_prefix}/status/state", f"OVERHEAT LOCKOUT: {time_remaining:.0f}s remaining")
+                # Publish lockout status to overheat sensor, not main status
+                client.publish(f"{mqtt_prefix}/overheat/state", f"LOCKOUT: {time_remaining:.0f}s remaining")
                 return
 
     if msg.topic == f"{mqtt_prefix}/start/cmd":
@@ -595,7 +610,7 @@ while run:
                     overheat_start_time = time.time()
                     overheat_last_temp = result.case_temperature
                     overheat_temp_rising_count = 0
-                    system_state = "Overheat Active"
+                    client.publish(f"{mqtt_prefix}/overheat/state", f"ACTIVE - Error 5 (Overheating)")
                 else:
                     # Heater in error 5 may stop responding - log status periodically
                     elapsed_error = time.time() - overheat_start_time
@@ -625,7 +640,7 @@ while run:
                     logger.info(f"Temperature: {result.case_temperature}°C, Level remains at 1 (manual increase required)")
                     overheat_active = False
                     overheat_temp_rising_count = 0
-                    system_state = "Connected"
+                    client.publish(f"{mqtt_prefix}/overheat/state", "Inactive")
                     # DO NOT restore level automatically - user must manually increase
 
             elif result.case_temperature >= overheat_threshold:
@@ -636,7 +651,7 @@ while run:
                 overheat_start_time = time.time()
                 overheat_last_temp = result.case_temperature
                 overheat_temp_rising_count = 0
-                system_state = "Overheat Active"
+                client.publish(f"{mqtt_prefix}/overheat/state", f"ACTIVE - Temp {result.case_temperature}°C")
 
                 # Immediately reduce power to 1
                 try:
