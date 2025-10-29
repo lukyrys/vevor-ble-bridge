@@ -548,17 +548,8 @@ while run:
             current_case_temperature = result.case_temperature
             current_heater_level = result.set_level
 
-            # Check if temperature limiting status changed or current level exceeds limit
+            # Check if temperature limiting status changed
             current_max_allowed = get_max_allowed_level(current_case_temperature)
-
-            # If current level exceeds max allowed, reduce it immediately
-            if result.set_level > current_max_allowed:
-                logger.warning(f"Current level {result.set_level} exceeds limit {current_max_allowed} at {current_case_temperature}°C - reducing")
-                try:
-                    vdh.set_level(current_max_allowed)
-                    logger.info(f"Level automatically reduced to {current_max_allowed}")
-                except Exception as e:
-                    logger.error(f"Failed to reduce level: {e}")
 
             # Update system state when max allowed level changes
             if current_max_allowed != last_max_allowed_level:
