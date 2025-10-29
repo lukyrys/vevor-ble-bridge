@@ -172,6 +172,19 @@ def publish_ha_config():
         json.dumps(status_conf),
     )
 
+    temperature_limiting_conf = {
+        "device": get_device_conf(),
+        "expire_after": 10,
+        "name": "Temperature Limiting",
+        "unique_id": f"{device_id}-023",
+        "state_topic": f"{mqtt_prefix}/temp_limiting/state",
+        "icon": "mdi:thermometer-alert",
+    }
+    client.publish(
+        f"{mqtt_discovery_prefix}/sensor/{device_id}-023/config",
+        json.dumps(temperature_limiting_conf),
+    )
+
     room_temperature_conf = {
         "device": get_device_conf(),
         "expire_after": 10,
@@ -299,6 +312,8 @@ def on_connect(client, userdata, flags, rc):
         ]
     )
     publish_ha_config()
+    # Initialize temperature limiting sensor
+    client.publish(f"{mqtt_prefix}/temp_limiting/state", "Inactive")
 
 
 def on_disconnect(client, userdata, rc):
@@ -321,9 +336,11 @@ def dispatch_result(result):
         msg = result.running_step_msg
         if result.error:
             msg = f"{msg} ({result.error_msg})"
-        # Add system state if not in normal connected state
-        if system_state != "Connected":
+
+        # Add system state ONLY for connection issues (not for temperature limiting)
+        if system_state != "Connected" and not system_state.startswith("Temperature limiting"):
             msg = f"{msg} [{system_state}]"
+
         logger.debug(f"Publishing status: '{msg}' (system_state: '{system_state}')")
         try:
             info = client.publish(f"{mqtt_prefix}/status/state", msg, qos=1)
@@ -551,16 +568,17 @@ while run:
             # Check if temperature limiting status changed
             current_max_allowed = get_max_allowed_level(current_case_temperature)
 
-            # Update system state when max allowed level changes
+            # Update temperature limiting sensor when max allowed level changes
             if current_max_allowed != last_max_allowed_level:
                 if current_max_allowed < 36:
                     # Temperature limiting is now active or level changed
-                    system_state = f"Temperature limiting: max level {current_max_allowed}"
+                    temp_limit_msg = f"Active: max level {current_max_allowed}"
                     logger.info(f"Temperature limiting active: max level {current_max_allowed} (temp: {current_case_temperature}°C)")
+                    client.publish(f"{mqtt_prefix}/temp_limiting/state", temp_limit_msg)
                 elif last_max_allowed_level < 36:
                     # Returning to normal from limited state
-                    system_state = "Connected"
                     logger.info(f"Temperature limiting deactivated (temp: {current_case_temperature}°C)")
+                    client.publish(f"{mqtt_prefix}/temp_limiting/state", "Inactive")
                 last_max_allowed_level = current_max_allowed
 
             # Periodic health check log every 30s
