@@ -9,6 +9,8 @@ import time
 import vevor
 import os
 import sys
+import subprocess
+import gc
 from bluepy.btle import BTLEDisconnectError
 
 # = Configuration
@@ -75,6 +77,46 @@ def init_client():
     client.on_publish = on_publish
     client.connect(mqtt_host, port=mqtt_port)
     return client
+
+
+def cleanup_ble_device(device):
+    """Properly cleanup BLE device object before reconnect"""
+    if device is not None:
+        try:
+            logger.info("Cleaning up BLE connection...")
+            device.disconnect()
+            logger.debug("BLE disconnect() called successfully")
+        except Exception as e:
+            logger.warning(f"Error during BLE disconnect: {e}")
+
+        try:
+            # Force garbage collection to cleanup bluepy objects
+            del device
+            gc.collect()
+            logger.debug("BLE object deleted and garbage collected")
+        except Exception as e:
+            logger.warning(f"Error during BLE cleanup: {e}")
+
+    # Small delay to let BLE stack settle
+    time.sleep(0.5)
+
+
+def reset_ble_adapter():
+    """Reset BLE adapter to clear stuck state"""
+    try:
+        logger.warning("Resetting BLE adapter (hci0)...")
+        subprocess.run(["hciconfig", "hci0", "down"], check=False, capture_output=True, timeout=5)
+        time.sleep(1)
+        subprocess.run(["hciconfig", "hci0", "up"], check=False, capture_output=True, timeout=5)
+        time.sleep(2)
+        logger.info("BLE adapter reset complete")
+        return True
+    except subprocess.TimeoutExpired:
+        logger.error("BLE adapter reset timed out")
+        return False
+    except Exception as e:
+        logger.error(f"Failed to reset BLE adapter: {e}")
+        return False
 
 
 def get_device_conf():
@@ -403,6 +445,8 @@ client.loop_start()
 max_reconnect_attempts = 5
 reconnect_delay = 5  # seconds
 reconnect_attempt = 0
+failed_reconnects_total = 0  # Track total failed reconnects for BLE reset
+ble_reset_threshold = 10  # Reset BLE adapter after this many failed reconnects
 
 # Watchdog settings
 last_successful_poll = time.time()
@@ -465,15 +509,23 @@ while run:
             system_state = "Reconnecting"
             elapsed_since_disconnect = time.time() - last_successful_poll if last_successful_poll > 0 else 0
             logger.info(f"Connecting to BLE device {ble_mac_address}... (offline for {elapsed_since_disconnect:.1f}s)")
-            logger.debug(f"Reconnect context: attempt={reconnect_attempt}, overheat_active={overheat_active}")
+            logger.debug(f"Reconnect context: attempt={reconnect_attempt}, total_failures={failed_reconnects_total}, overheat_active={overheat_active}")
+
+            # Reset BLE adapter if too many failures
+            if failed_reconnects_total > 0 and failed_reconnects_total % ble_reset_threshold == 0:
+                logger.error(f"BLE adapter reset triggered after {failed_reconnects_total} failed reconnects")
+                reset_ble_adapter()
 
             try:
                 vdh = vevor.DieselHeater(ble_mac_address, ble_passkey)
                 logger.info(f"Successfully connected to BLE device after {elapsed_since_disconnect:.1f}s offline")
                 system_state = "Connected"
                 reconnect_attempt = 0
+                failed_reconnects_total = 0  # Reset counter on success
             except Exception as conn_error:
                 logger.error(f"Failed to connect to BLE device: {conn_error}")
+                failed_reconnects_total += 1
+                # No need to cleanup here - vdh is already None or failed to create
                 vdh = None
                 raise  # Re-raise to be caught by outer exception handlers
 
@@ -615,6 +667,7 @@ while run:
         logger.error(f"BLE disconnected: {e}")
         logger.error(f"Context: consecutive_failures={consecutive_failures}, time_since_last_poll={time.time() - last_successful_poll:.1f}s")
         logger.error(f"Overheat: active={overheat_active}, last_temp={overheat_last_temp}°C")
+        cleanup_ble_device(vdh)
         vdh = None
         system_state = "Disconnected"
         # Publish offline status to MQTT
@@ -636,6 +689,7 @@ while run:
     except TimeoutError as e:
         logger.error(f"BLE timeout: {e}")
         logger.error(f"Context: consecutive_failures={consecutive_failures}, time_since_last_poll={time.time() - last_successful_poll:.1f}s")
+        cleanup_ble_device(vdh)
         vdh = None
         system_state = "Timeout"
         client.publish(f"{mqtt_prefix}/status/state", system_state)
@@ -647,6 +701,7 @@ while run:
         logger.error(f"Runtime error: {e}")
         logger.error(f"Context: consecutive_failures={consecutive_failures}, time_since_last_poll={time.time() - last_successful_poll:.1f}s")
         logger.error(f"Overheat: active={overheat_active}, system_state={system_state}")
+        cleanup_ble_device(vdh)
         vdh = None
         system_state = "Watchdog Triggered"
         client.publish(f"{mqtt_prefix}/status/state", system_state)
@@ -658,6 +713,7 @@ while run:
         logger.error(f"Unexpected error: {e}")
         logger.error(f"Context: consecutive_failures={consecutive_failures}, time_since_last_poll={time.time() - last_successful_poll:.1f}s")
         logger.exception("Full traceback:")
+        cleanup_ble_device(vdh)
         vdh = None
         system_state = "Error"
         client.publish(f"{mqtt_prefix}/status/state", system_state)
