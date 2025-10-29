@@ -97,8 +97,8 @@ def cleanup_ble_device(device):
         except Exception as e:
             logger.warning(f"Error during BLE cleanup: {e}")
 
-    # Small delay to let BLE stack settle
-    time.sleep(0.5)
+    # Minimal delay to let BLE stack settle - faster reconnect
+    time.sleep(0.2)
 
 
 def reset_ble_adapter():
@@ -443,16 +443,16 @@ client.loop_start()
 
 # Connection retry settings
 max_reconnect_attempts = 5
-reconnect_delay = 5  # seconds
+reconnect_delay = 2  # seconds - faster reconnect attempts
 reconnect_attempt = 0
 failed_reconnects_total = 0  # Track total failed reconnects for BLE reset
-ble_reset_threshold = 10  # Reset BLE adapter after this many failed reconnects
+ble_reset_threshold = 5  # Reset BLE adapter after this many failed reconnects (faster reset)
 
 # Watchdog settings
 last_successful_poll = time.time()
-watchdog_timeout = 30  # seconds - if no successful poll for 30s, reconnect
+watchdog_timeout = 10  # seconds - faster detection of connection loss (was 30s)
 consecutive_failures = 0
-max_consecutive_failures = 3  # reconnect after 3 consecutive failures
+max_consecutive_failures = 2  # reconnect after 2 consecutive failures (faster reaction)
 
 # MQTT health check
 last_mqtt_health_check = time.time()
@@ -517,7 +517,8 @@ while run:
                 reset_ble_adapter()
 
             try:
-                vdh = vevor.DieselHeater(ble_mac_address, ble_passkey)
+                # Use 5s timeout for faster failure detection
+                vdh = vevor.DieselHeater(ble_mac_address, ble_passkey, timeout_sec=5)
                 logger.info(f"Successfully connected to BLE device after {elapsed_since_disconnect:.1f}s offline")
                 system_state = "Connected"
                 reconnect_attempt = 0
