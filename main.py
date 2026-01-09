@@ -144,6 +144,7 @@ def publish_ha_config():
     client.publish(
         f"{mqtt_discovery_prefix}/button/{device_id}-000/config",
         json.dumps(start_conf),
+        retain=True,
     )
 
     stop_conf = {
@@ -158,6 +159,7 @@ def publish_ha_config():
     client.publish(
         f"{mqtt_discovery_prefix}/button/{device_id}-001/config",
         json.dumps(stop_conf),
+        retain=True,
     )
 
     status_conf = {
@@ -170,6 +172,7 @@ def publish_ha_config():
     client.publish(
         f"{mqtt_discovery_prefix}/sensor/{device_id}-010/config",
         json.dumps(status_conf),
+        retain=True,
     )
 
     temperature_limiting_conf = {
@@ -183,6 +186,7 @@ def publish_ha_config():
     client.publish(
         f"{mqtt_discovery_prefix}/sensor/{device_id}-023/config",
         json.dumps(temperature_limiting_conf),
+        retain=True,
     )
 
     overheat_protection_conf = {
@@ -196,6 +200,7 @@ def publish_ha_config():
     client.publish(
         f"{mqtt_discovery_prefix}/sensor/{device_id}-024/config",
         json.dumps(overheat_protection_conf),
+        retain=True,
     )
 
     room_temperature_conf = {
@@ -211,6 +216,7 @@ def publish_ha_config():
     client.publish(
         f"{mqtt_discovery_prefix}/sensor/{device_id}-011/config",
         json.dumps(room_temperature_conf),
+        retain=True,
     )
 
     heater_temperature_conf = {
@@ -226,6 +232,7 @@ def publish_ha_config():
     client.publish(
         f"{mqtt_discovery_prefix}/sensor/{device_id}-012/config",
         json.dumps(heater_temperature_conf),
+        retain=True,
     )
 
     voltage_conf = {
@@ -241,6 +248,7 @@ def publish_ha_config():
     client.publish(
         f"{mqtt_discovery_prefix}/sensor/{device_id}-013/config",
         json.dumps(voltage_conf),
+        retain=True,
     )
 
     altitude_conf = {
@@ -256,6 +264,7 @@ def publish_ha_config():
     client.publish(
         f"{mqtt_discovery_prefix}/sensor/{device_id}-014/config",
         json.dumps(altitude_conf),
+        retain=True,
     )
 
     mode_select_conf = {
@@ -271,6 +280,7 @@ def publish_ha_config():
     client.publish(
         f"{mqtt_discovery_prefix}/select/{device_id}-021/config",
         json.dumps(mode_select_conf),
+        retain=True,
     )
 
     level_conf = {
@@ -289,6 +299,7 @@ def publish_ha_config():
     client.publish(
         f"{mqtt_discovery_prefix}/number/{device_id}-020/config",
         json.dumps(level_conf),
+        retain=True,
     )
     
     temperature_conf = {
@@ -307,6 +318,7 @@ def publish_ha_config():
     client.publish(
         f"{mqtt_discovery_prefix}/number/{device_id}-022/config",
         json.dumps(temperature_conf),
+        retain=True,
     )   
 
 def on_connect(client, userdata, flags, rc):
@@ -334,8 +346,14 @@ def on_disconnect(client, userdata, rc):
     """
     This callback is called when the client disconnects from the broker.
     An rc (result code) different from 0 usually indicates an unexpected disconnect.
+    Paho MQTT with loop_start() will auto-reconnect, but we log and assist if needed.
     """
-    logger.debug(f"Disconnected from broker. rc = {rc}")
+    if rc == 0:
+        logger.info("Disconnected from MQTT broker (clean disconnect)")
+    else:
+        logger.warning(f"Unexpected disconnect from MQTT broker (rc={rc}), auto-reconnect will attempt...")
+        # Paho's loop_start() handles reconnection automatically
+        # on_connect will be called again when reconnected, which will re-publish HA config
 
 
 def dispatch_result(result):
