@@ -11,7 +11,7 @@ import os
 import sys
 import subprocess
 import gc
-from bluepy.btle import BTLEDisconnectError
+from bluepy.btle import BTLEDisconnectError, BTLEInternalError
 
 # = Configuration
 # == BLE bridge
@@ -448,38 +448,50 @@ def on_message(client, userdata, msg):
                 client.publish(f"{mqtt_prefix}/overheat/state", f"LOCKOUT: {time_remaining:.0f}s remaining")
                 return
 
-    if msg.topic == f"{mqtt_prefix}/start/cmd":
-        logger.info("Received START command")
-        dispatch_result(vdh.start())
-    elif msg.topic == f"{mqtt_prefix}/stop/cmd":
-        logger.info("Received STOP command")
-        dispatch_result(vdh.stop())
-    elif msg.topic == f"{mqtt_prefix}/level/cmd":
-        global last_level_limit_warning, current_heater_level
-        requested_level = int(msg.payload)
-        max_allowed = get_max_allowed_level(current_case_temperature)
+    # Wrap all BLE operations in try/except to prevent MQTT thread crash
+    try:
+        if msg.topic == f"{mqtt_prefix}/start/cmd":
+            logger.info("Received START command")
+            dispatch_result(vdh.start())
+        elif msg.topic == f"{mqtt_prefix}/stop/cmd":
+            logger.info("Received STOP command")
+            dispatch_result(vdh.stop())
+        elif msg.topic == f"{mqtt_prefix}/level/cmd":
+            global last_level_limit_warning, current_heater_level
+            requested_level = int(msg.payload)
+            max_allowed = get_max_allowed_level(current_case_temperature)
 
-        if requested_level > max_allowed:
-            # Reduce to max allowed instead of ignoring completely
-            if time.time() - last_level_limit_warning > 30:
-                logger.warning(f"Level {requested_level} reduced to {max_allowed} due to temperature limit (temp: {current_case_temperature}°C)")
-                last_level_limit_warning = time.time()
-            requested_level = max_allowed
+            if requested_level > max_allowed:
+                # Reduce to max allowed instead of ignoring completely
+                if time.time() - last_level_limit_warning > 30:
+                    logger.warning(f"Level {requested_level} reduced to {max_allowed} due to temperature limit (temp: {current_case_temperature}°C)")
+                    last_level_limit_warning = time.time()
+                requested_level = max_allowed
 
-        # Only send command if level actually changed - prevents MQTT spam
-        if requested_level == current_heater_level:
-            logger.debug(f"Level {requested_level} already set, skipping redundant command")
-            return
+            # Only send command if level actually changed - prevents MQTT spam
+            if requested_level == current_heater_level:
+                logger.debug(f"Level {requested_level} already set, skipping redundant command")
+                return
 
-        logger.info(f"Received LEVEL={requested_level} command (temp: {current_case_temperature}°C)")
-        dispatch_result(vdh.set_level(requested_level))
-    elif msg.topic == f"{mqtt_prefix}/temperature/cmd":
-        logger.info(f"Received TEMPERATURE={int(msg.payload)} command")
-        dispatch_result(vdh.set_level(int(msg.payload)))
-    elif msg.topic == f"{mqtt_prefix}/mode/cmd":
-        logger.info(f"Received MODE={msg.payload} command")
-        dispatch_result(vdh.set_mode(modes.index(msg.payload.decode('ascii')) + 1))
-    logger.debug(f"{msg.topic} {str(msg.payload)}")
+            logger.info(f"Received LEVEL={requested_level} command (temp: {current_case_temperature}°C)")
+            dispatch_result(vdh.set_level(requested_level))
+        elif msg.topic == f"{mqtt_prefix}/temperature/cmd":
+            logger.info(f"Received TEMPERATURE={int(msg.payload)} command")
+            dispatch_result(vdh.set_level(int(msg.payload)))
+        elif msg.topic == f"{mqtt_prefix}/mode/cmd":
+            logger.info(f"Received MODE={msg.payload} command")
+            dispatch_result(vdh.set_mode(modes.index(msg.payload.decode('ascii')) + 1))
+        logger.debug(f"{msg.topic} {str(msg.payload)}")
+    except Exception as e:
+        # Critical: catch all BLE errors to prevent MQTT thread crash
+        logger.error(f"BLE command failed in on_message: {e}")
+        logger.error(f"Command was: {msg.topic} = {msg.payload}")
+        client.publish(f"{mqtt_prefix}/status/state", f"Command failed: {type(e).__name__}")
+        # Mark vdh as None to force reconnection in main loop
+        # This is safe because main loop will detect vdh=None and reconnect
+        global vdh
+        vdh = None
+        logger.warning("BLE device marked for reconnection due to command failure")
 
 
 def on_publish(client, userdata, mid):
