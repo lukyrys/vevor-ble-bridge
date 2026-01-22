@@ -11,6 +11,7 @@ import os
 import sys
 import subprocess
 import gc
+import threading
 from bluepy.btle import BTLEDisconnectError, BTLEInternalError
 
 # = Configuration
@@ -47,6 +48,9 @@ logger = None
 vdh = None
 run = True
 modes = ["Power Level", "Temperature"]
+
+# Thread lock for BLE operations - bluepy is NOT thread-safe
+ble_lock = threading.Lock()
 
 def init_logger():
     logger = logging.getLogger("vevor-ble-bridge")
@@ -449,6 +453,13 @@ def on_message(client, userdata, msg):
                 return
 
     # Wrap all BLE operations in try/except to prevent MQTT thread crash
+    # Use lock to serialize BLE access (bluepy is NOT thread-safe)
+    acquired = ble_lock.acquire(timeout=5)
+    if not acquired:
+        logger.warning(f"Could not acquire BLE lock for command: {msg.topic} (timeout)")
+        client.publish(f"{mqtt_prefix}/status/state", "Command skipped: BLE busy")
+        return
+
     try:
         if msg.topic == f"{mqtt_prefix}/start/cmd":
             logger.info("Received START command")
@@ -492,6 +503,8 @@ def on_message(client, userdata, msg):
         global vdh
         vdh = None
         logger.warning("BLE device marked for reconnection due to command failure")
+    finally:
+        ble_lock.release()
 
 
 def on_publish(client, userdata, mid):
@@ -598,8 +611,9 @@ while run:
                 vdh = None
                 raise  # Re-raise to be caught by outer exception handlers
 
-        # Get status and dispatch
-        result = vdh.get_status()
+        # Get status and dispatch (with BLE lock for thread safety)
+        with ble_lock:
+            result = vdh.get_status()
 
         # Watchdog: check if we got valid result
         if result is not None:
@@ -683,9 +697,10 @@ while run:
                 overheat_temp_rising_count = 0
                 client.publish(f"{mqtt_prefix}/overheat/state", f"ACTIVE - Temp {result.case_temperature}°C")
 
-                # Immediately reduce power to 1
+                # Immediately reduce power to 1 (with BLE lock for thread safety)
                 try:
-                    vdh.set_level(1)
+                    with ble_lock:
+                        vdh.set_level(1)
                 except Exception as e:
                     logger.error(f"Failed to reduce power during overheat: {e}")
 
