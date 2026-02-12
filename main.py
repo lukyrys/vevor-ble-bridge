@@ -11,8 +11,8 @@ import os
 import sys
 import subprocess
 import gc
-import threading
-from bluepy.btle import BTLEDisconnectError, BTLEInternalError
+import queue
+from bluepy.btle import BTLEDisconnectError
 
 # = Configuration
 # == BLE bridge
@@ -49,8 +49,10 @@ vdh = None
 run = True
 modes = ["Power Level", "Temperature"]
 
-# Thread lock for BLE operations - bluepy is NOT thread-safe
-ble_lock = threading.Lock()
+# Command queue for thread-safe BLE access
+# MQTT on_message runs in a separate thread - bluepy is NOT thread-safe
+# All BLE commands must be executed from the main loop thread
+command_queue = queue.Queue()
 
 def init_logger():
     logger = logging.getLogger("vevor-ble-bridge")
@@ -432,8 +434,10 @@ def dispatch_result(result):
 
 
 # The callback for when a PUBLISH message is received from the server.
+# NEVER call BLE operations here - bluepy is not thread-safe.
+# Instead, enqueue commands for the main loop to process.
 def on_message(client, userdata, msg):
-    global overheat_active, overheat_start_time, vdh, current_case_temperature
+    global overheat_active, overheat_start_time, current_case_temperature
 
     # Check if device is connected
     if vdh is None:
@@ -452,59 +456,82 @@ def on_message(client, userdata, msg):
                 client.publish(f"{mqtt_prefix}/overheat/state", f"LOCKOUT: {time_remaining:.0f}s remaining")
                 return
 
-    # Wrap all BLE operations in try/except to prevent MQTT thread crash
-    # Use lock to serialize BLE access (bluepy is NOT thread-safe)
-    acquired = ble_lock.acquire(timeout=5)
-    if not acquired:
-        logger.warning(f"Could not acquire BLE lock for command: {msg.topic} (timeout)")
-        client.publish(f"{mqtt_prefix}/status/state", "Command skipped: BLE busy")
-        return
+    if msg.topic == f"{mqtt_prefix}/start/cmd":
+        logger.info("Queuing START command")
+        command_queue.put(("start", None))
+    elif msg.topic == f"{mqtt_prefix}/stop/cmd":
+        logger.info("Queuing STOP command")
+        command_queue.put(("stop", None))
+    elif msg.topic == f"{mqtt_prefix}/level/cmd":
+        requested_level = int(msg.payload)
+        max_allowed = get_max_allowed_level(current_case_temperature)
 
-    try:
-        if msg.topic == f"{mqtt_prefix}/start/cmd":
-            logger.info("Received START command")
-            dispatch_result(vdh.start())
-        elif msg.topic == f"{mqtt_prefix}/stop/cmd":
-            logger.info("Received STOP command")
-            dispatch_result(vdh.stop())
-        elif msg.topic == f"{mqtt_prefix}/level/cmd":
-            global last_level_limit_warning, current_heater_level
-            requested_level = int(msg.payload)
-            max_allowed = get_max_allowed_level(current_case_temperature)
+        if requested_level > max_allowed:
+            # Reduce to max allowed instead of ignoring completely
+            if time.time() - last_level_limit_warning > 30:
+                logger.warning(f"Level {requested_level} reduced to {max_allowed} due to temperature limit (temp: {current_case_temperature}°C)")
+            requested_level = max_allowed
 
-            if requested_level > max_allowed:
-                # Reduce to max allowed instead of ignoring completely
-                if time.time() - last_level_limit_warning > 30:
-                    logger.warning(f"Level {requested_level} reduced to {max_allowed} due to temperature limit (temp: {current_case_temperature}°C)")
-                    last_level_limit_warning = time.time()
-                requested_level = max_allowed
+        # Only send command if level actually changed - prevents MQTT spam
+        if requested_level == current_heater_level:
+            logger.debug(f"Level {requested_level} already set, skipping redundant command")
+            return
 
-            # Only send command if level actually changed - prevents MQTT spam
-            if requested_level == current_heater_level:
-                logger.debug(f"Level {requested_level} already set, skipping redundant command")
-                return
+        logger.info(f"Queuing LEVEL={requested_level} command (temp: {current_case_temperature}°C)")
+        command_queue.put(("level", requested_level))
+    elif msg.topic == f"{mqtt_prefix}/temperature/cmd":
+        logger.info(f"Queuing TEMPERATURE={int(msg.payload)} command")
+        command_queue.put(("temperature", int(msg.payload)))
+    elif msg.topic == f"{mqtt_prefix}/mode/cmd":
+        logger.info(f"Queuing MODE={msg.payload} command")
+        command_queue.put(("mode", msg.payload.decode('ascii')))
+    logger.debug(f"{msg.topic} {str(msg.payload)}")
 
-            logger.info(f"Received LEVEL={requested_level} command (temp: {current_case_temperature}°C)")
-            dispatch_result(vdh.set_level(requested_level))
-        elif msg.topic == f"{mqtt_prefix}/temperature/cmd":
-            logger.info(f"Received TEMPERATURE={int(msg.payload)} command")
-            dispatch_result(vdh.set_level(int(msg.payload)))
-        elif msg.topic == f"{mqtt_prefix}/mode/cmd":
-            logger.info(f"Received MODE={msg.payload} command")
-            dispatch_result(vdh.set_mode(modes.index(msg.payload.decode('ascii')) + 1))
-        logger.debug(f"{msg.topic} {str(msg.payload)}")
-    except Exception as e:
-        # Critical: catch all BLE errors to prevent MQTT thread crash
-        logger.error(f"BLE command failed in on_message: {e}")
-        logger.error(f"Command was: {msg.topic} = {msg.payload}")
-        client.publish(f"{mqtt_prefix}/status/state", f"Command failed: {type(e).__name__}")
-        # Mark vdh as None to force reconnection in main loop
-        # This is safe because main loop will detect vdh=None and reconnect
-        global vdh
-        vdh = None
-        logger.warning("BLE device marked for reconnection due to command failure")
-    finally:
-        ble_lock.release()
+
+def process_command_queue():
+    """
+    Process pending commands from the queue.
+    Called from main loop thread - safe to use BLE here.
+    """
+    global last_level_limit_warning
+    processed = 0
+    while not command_queue.empty() and processed < 5:
+        try:
+            cmd, arg = command_queue.get_nowait()
+        except queue.Empty:
+            break
+
+        processed += 1
+        try:
+            if cmd == "start":
+                logger.info("Executing START command")
+                dispatch_result(vdh.start())
+            elif cmd == "stop":
+                logger.info("Executing STOP command")
+                dispatch_result(vdh.stop())
+            elif cmd == "level":
+                # Re-check temperature limit at execution time
+                max_allowed = get_max_allowed_level(current_case_temperature)
+                level = arg
+                if level > max_allowed:
+                    if time.time() - last_level_limit_warning > 30:
+                        logger.warning(f"Level {level} reduced to {max_allowed} at execution time (temp: {current_case_temperature}°C)")
+                        last_level_limit_warning = time.time()
+                    level = max_allowed
+                if level == current_heater_level:
+                    logger.debug(f"Level {level} already set at execution time, skipping")
+                    continue
+                logger.info(f"Executing LEVEL={level} command")
+                dispatch_result(vdh.set_level(level))
+            elif cmd == "temperature":
+                logger.info(f"Executing TEMPERATURE={arg} command")
+                dispatch_result(vdh.set_level(arg))
+            elif cmd == "mode":
+                logger.info(f"Executing MODE={arg} command")
+                dispatch_result(vdh.set_mode(modes.index(arg) + 1))
+        except Exception as e:
+            logger.error(f"Error executing queued command '{cmd}': {e}")
+            raise
 
 
 def on_publish(client, userdata, mid):
@@ -611,9 +638,11 @@ while run:
                 vdh = None
                 raise  # Re-raise to be caught by outer exception handlers
 
-        # Get status and dispatch (with BLE lock for thread safety)
-        with ble_lock:
-            result = vdh.get_status()
+        # Process queued MQTT commands BEFORE polling (thread-safe BLE access)
+        process_command_queue()
+
+        # Get status and dispatch
+        result = vdh.get_status()
 
         # Watchdog: check if we got valid result
         if result is not None:
@@ -643,7 +672,7 @@ while run:
             # Periodic health check log every 30s
             if int(time.time()) % 30 == 0:
                 max_allowed = get_max_allowed_level(current_case_temperature)
-                logger.debug(f"Health check OK - temp: {current_case_temperature}°C, level: {result.set_level}, max_allowed: {max_allowed}, step: {result.running_step_msg}")
+                logger.debug(f"Health check OK - temp: {current_case_temperature}°C, level: {result.set_level}, max_allowed: {max_allowed}, step: {result.running_step_msg}, queue: {command_queue.qsize()}")
 
             # Check for heater's own overheat error (error code 5)
             if result.error == 5:  # Overheating error from heater
@@ -697,10 +726,9 @@ while run:
                 overheat_temp_rising_count = 0
                 client.publish(f"{mqtt_prefix}/overheat/state", f"ACTIVE - Temp {result.case_temperature}°C")
 
-                # Immediately reduce power to 1 (with BLE lock for thread safety)
+                # Immediately reduce power to 1
                 try:
-                    with ble_lock:
-                        vdh.set_level(1)
+                    vdh.set_level(1)
                 except Exception as e:
                     logger.error(f"Failed to reduce power during overheat: {e}")
 
